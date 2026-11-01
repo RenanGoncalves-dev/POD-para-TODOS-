@@ -14,24 +14,28 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.Color
 import coil.compose.AsyncImage
 
 private val Red = Color(0xFFFF4D4D)
@@ -87,6 +91,8 @@ private fun freeSpace(v: Volume) = runCatching { StatFs(v.dir.absolutePath).avai
 fun Screen(vm: MainVm) {
     val ctx = LocalContext.current
     val episodes by vm.episodes.collectAsState()
+    val playlists by vm.playlists.collectAsState()
+    val selectedPlId by vm.selectedPlaylistId.collectAsState()
     val jobs by DownloadManager.jobs.collectAsState()
     val ready by DownloadManager.ready.collectAsState()
     val initErr by DownloadManager.initError.collectAsState()
@@ -94,8 +100,18 @@ fun Screen(vm: MainVm) {
     val selected by vm.selected.collectAsState()
     val volumes by vm.volumes.collectAsState()
     val category by vm.category.collectAsState()
-    val shown = episodes.filter { it.category == category }
+
+    val catPlaylists = playlists.filter { it.category == category }
+    val activePlaylist = catPlaylists.firstOrNull { it.id == selectedPlId }
+    val shown = episodes.filter { ep ->
+        ep.category == category && (activePlaylist == null || ep.id in activePlaylist.items)
+    }
+
     var moving by remember { mutableStateOf<Episode?>(null) }
+    var playlistTarget by remember { mutableStateOf<Episode?>(null) }
+    var creatingPlaylistWithEp by remember { mutableStateOf<Episode?>(null) }
+    var showNewPlaylistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var showStorage by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Episode?>(null) }
@@ -138,6 +154,33 @@ fun Screen(vm: MainVm) {
                     }
                 }
             }
+
+            // Barra de Playlists da categoria atual
+            item {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = activePlaylist == null,
+                        onClick = { vm.selectPlaylist(null) },
+                        label = { Text("Todas", fontSize = 12.sp) },
+                    )
+                    catPlaylists.forEach { pl ->
+                        FilterChip(
+                            selected = activePlaylist?.id == pl.id,
+                            onClick = { vm.selectPlaylist(pl.id) },
+                            label = { Text("🎶 ${pl.name} (${pl.items.size})", fontSize = 12.sp) },
+                        )
+                    }
+                    AssistChip(
+                        onClick = { creatingPlaylistWithEp = null; newPlaylistName = ""; showNewPlaylistDialog = true },
+                        label = { Text("+ Nova playlist", fontSize = 12.sp, color = Red) },
+                    )
+                }
+            }
+
             item {
                 Column(Modifier.clip(RoundedCornerShape(20.dp)).background(Card).padding(14.dp)) {
                     OutlinedTextField(
@@ -157,13 +200,14 @@ fun Screen(vm: MainVm) {
                         onClick = { vm.download(url); url = "" }, enabled = url.isNotBlank(),
                         modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp),
                     ) {
-                        Icon(Icons.Default.Download, null); Spacer(Modifier.width(8.dp)); Text("Baixar em ${category.label}", fontSize = 16.sp)
+                        val dest = category.label + (activePlaylist?.let { " → ${it.name}" } ?: "")
+                        Icon(Icons.Default.Download, null); Spacer(Modifier.width(8.dp)); Text("Baixar áudio em $dest", fontSize = 15.sp)
                     }
                     Text(
                         when {
                             initErr != null -> "⚠ Falha ao iniciar: $initErr"
                             !ready -> "Preparando o baixador (1ª vez demora um pouco)…"
-                            else -> "Salvando em: ${selected.label}"
+                            else -> "Salvando somente áudio + capa em: ${selected.label}"
                         },
                         color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp),
                     )
@@ -194,35 +238,115 @@ fun Screen(vm: MainVm) {
                 }
             }
 
-            item { Text("${category.label} (${shown.size})", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)) }
-            if (shown.isEmpty()) item {
-                Text("Nada em ${category.label} ainda. Cole um link acima ou compartilhe um vídeo do YouTube com este app.", color = Color.Gray)
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    val headerTitle = activePlaylist?.let { "🎶 ${it.name} (${shown.size})" } ?: "${category.label} (${shown.size})"
+                    Text(headerTitle, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    if (shown.isNotEmpty()) {
+                        TextButton(onClick = { vm.play(shown.first(), shown) }) {
+                            Icon(Icons.Default.PlayArrow, null, tint = Red)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Tocar tudo", color = Red)
+                        }
+                    }
+                    if (activePlaylist != null) {
+                        IconButton(onClick = { vm.deletePlaylist(activePlaylist) }) {
+                            Icon(Icons.Default.DeleteOutline, "Excluir playlist", tint = Color.Gray)
+                        }
+                    }
+                }
             }
+
+            if (shown.isEmpty()) item {
+                val msg = if (activePlaylist != null) {
+                    "A playlist \"${activePlaylist.name}\" está vazia. Toque no ícone de playlist em qualquer áudio ou baixe um link direto nela."
+                } else {
+                    "Nada em ${category.label} ainda. Cole um link acima ou compartilhe um vídeo do YouTube com este app."
+                }
+                Text(msg, color = Color.Gray)
+            }
+
             items(shown, key = { it.file.absolutePath }) { ep ->
                 val active = p.episode?.id == ep.id
+                val epPls = catPlaylists.filter { ep.id in it.items }
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                         .background(if (active) Color(0xFF2A1A1E) else Card)
-                        .clickable { vm.play(ep) }.padding(10.dp),
+                        .clickable { vm.play(ep, shown) }.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AsyncImage(
                         model = ep.thumb, contentDescription = null, contentScale = ContentScale.Crop,
                         modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF2A2A32)),
                     )
-                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                         Text(ep.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("${fmtSize(ep.size)} · ${ep.volume}", color = Color.Gray, fontSize = 12.sp)
+                        val plText = if (epPls.isNotEmpty()) " · 🎶 " + epPls.joinToString { it.name } else ""
+                        Text("${fmtSize(ep.size)} · ${ep.volume}$plText", color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Icon(
                         if (active && p.playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
-                        tint = Red, modifier = Modifier.size(32.dp),
+                        tint = Red, modifier = Modifier.size(30.dp),
                     )
-                    IconButton(onClick = { moving = ep }) { Icon(Icons.Default.DriveFileMove, "Mover", tint = Color.Gray) }
+                    IconButton(onClick = { playlistTarget = ep }) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Playlists", tint = Color.Gray) }
+                    IconButton(onClick = { moving = ep }) { Icon(Icons.AutoMirrored.Filled.DriveFileMove, "Mover", tint = Color.Gray) }
                     IconButton(onClick = { confirmDelete = ep }) { Icon(Icons.Default.DeleteOutline, "Apagar", tint = Color.Gray) }
                 }
             }
         }
+    }
+
+    if (showNewPlaylistDialog) AlertDialog(
+        onDismissRequest = { showNewPlaylistDialog = false },
+        title = { Text("Nova playlist em ${category.label}") },
+        text = {
+            OutlinedTextField(
+                value = newPlaylistName,
+                onValueChange = { newPlaylistName = it },
+                singleLine = true,
+                placeholder = { Text("Ex: Favoritas, Treino, Viagem") },
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                vm.createPlaylist(newPlaylistName, creatingPlaylistWithEp?.id)
+                showNewPlaylistDialog = false
+            }) { Text("Criar", color = Red) }
+        },
+        dismissButton = { TextButton(onClick = { showNewPlaylistDialog = false }) { Text("Cancelar") } },
+    )
+
+    playlistTarget?.let { ep ->
+        AlertDialog(
+            onDismissRequest = { playlistTarget = null },
+            title = { Text("Organizar em playlists") },
+            text = {
+                Column {
+                    Text(ep.title, fontSize = 12.sp, color = Color.Gray, maxLines = 2)
+                    Spacer(Modifier.height(8.dp))
+                    val list = playlists.filter { it.category == ep.category }
+                    list.forEach { pl ->
+                        val has = ep.id in pl.items
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.toggleInPlaylist(pl, ep) }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = has, onCheckedChange = { vm.toggleInPlaylist(pl, ep) })
+                            Text(pl.name)
+                        }
+                    }
+                    TextButton(onClick = {
+                        playlistTarget = null
+                        creatingPlaylistWithEp = ep
+                        newPlaylistName = ""
+                        showNewPlaylistDialog = true
+                    }) {
+                        Text("+ Criar nova playlist com este áudio", color = Red)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { playlistTarget = null }) { Text("Concluído") } },
+        )
     }
 
     if (showStorage) AlertDialog(
@@ -245,7 +369,7 @@ fun Screen(vm: MainVm) {
                 }
                 if (volumes.size == 1) Text("Cartão de memória não detectado. Insira o cartão e volte para esta tela.", fontSize = 12.sp, color = Color.Gray)
                 Spacer(Modifier.height(8.dp))
-                Text("Episódios que já estiverem nas pastas do celular ou do cartão aparecem sozinhos na biblioteca.", fontSize = 12.sp, color = Color.Gray)
+                Text("Os áudios, capas (thumbnails) e playlists que já estiverem nas pastas do celular ou do cartão aparecem sozinhos na biblioteca.", fontSize = 12.sp, color = Color.Gray)
             }
         },
     )
@@ -271,7 +395,7 @@ fun Screen(vm: MainVm) {
     confirmDelete?.let { ep ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            title = { Text("Apagar episódio?") }, text = { Text(ep.title) },
+            title = { Text("Apagar áudio?") }, text = { Text(ep.title) },
             confirmButton = { TextButton(onClick = { vm.delete(ep); confirmDelete = null }) { Text("Apagar", color = Red) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancelar") } },
         )

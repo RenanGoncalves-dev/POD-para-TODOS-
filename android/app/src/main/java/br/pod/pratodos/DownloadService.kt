@@ -23,7 +23,15 @@ import kotlinx.coroutines.launch
 
 enum class Status { QUEUED, RUNNING, DONE, ERROR }
 
-data class DlJob(val id: Long, val url: String, val category: Category = Category.PODCASTS, val status: Status = Status.QUEUED, val progress: Float = 0f, val text: String = "Na fila")
+data class DlJob(
+    val id: Long,
+    val url: String,
+    val category: Category = Category.PODCASTS,
+    val playlistId: String? = null,
+    val status: Status = Status.QUEUED,
+    val progress: Float = 0f,
+    val text: String = "Na fila",
+)
 
 object DownloadManager {
     val jobs = MutableStateFlow<List<DlJob>>(emptyList())
@@ -32,8 +40,8 @@ object DownloadManager {
     val version = MutableStateFlow(0) // incrementa a cada download concluído (atualiza a lista)
     private var seq = 0L
 
-    fun enqueue(ctx: Context, url: String, category: Category) {
-        val j = DlJob(++seq, url.trim(), category)
+    fun enqueue(ctx: Context, url: String, category: Category, playlistId: String? = null) {
+        val j = DlJob(++seq, url.trim(), category, playlistId)
         jobs.update { it + j }
         val i = Intent(ctx, DownloadService::class.java)
         if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
@@ -43,7 +51,7 @@ object DownloadManager {
     fun clearFinished() = jobs.update { l -> l.filter { it.status == Status.QUEUED || it.status == Status.RUNNING } }
 }
 
-/** Baixa em primeiro plano (continua com a tela apagada ou o app minimizado). */
+/** Baixa somente o ÁUDIO + a THUMBNAIL offline em primeiro plano (continua com a tela apagada). */
 class DownloadService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO)
     private var worker: Job? = null
@@ -70,13 +78,16 @@ class DownloadService : Service() {
         while (!DownloadManager.ready.value && DownloadManager.initError.value == null) delay(300)
         while (true) {
             val job = DownloadManager.jobs.value.firstOrNull { it.status == Status.QUEUED } ?: break
-            startFg("Baixando…")
+            startFg("Baixando áudio…")
             DownloadManager.update(job.id) { it.copy(status = Status.RUNNING, text = "Iniciando…") }
             val vol = Library.selected(this)
+            val beforeIds = Library.scan(this).map { it.id }.toSet()
             runCatching {
                 if (DownloadManager.initError.value != null) error("yt-dlp não iniciou: ${DownloadManager.initError.value}")
                 val req = YoutubeDLRequest(job.url).apply {
                     addOption("-f", "bestaudio[ext=m4a]/bestaudio")
+                    addOption("--write-thumbnail")
+                    addOption("--convert-thumbnails", "jpg")
                     addOption("-o", "${Library.catDir(vol, job.category).absolutePath}/%(title).100s [%(id)s].%(ext)s")
                     addOption("--windows-filenames") // nomes aceitos por cartão FAT/exFAT
                     addOption("--yes-playlist")
@@ -89,7 +100,16 @@ class DownloadService : Service() {
                     DownloadManager.update(job.id) { it.copy(progress = if (p > 0) p / 100f else it.progress, text = txt.ifBlank { it.text }) }
                 }
             }.onSuccess {
-                DownloadManager.update(job.id) { it.copy(status = Status.DONE, progress = 1f, text = "Concluído") }
+                if (job.playlistId != null) {
+                    val newIds = Library.scan(this).map { it.id }.filter { it !in beforeIds }
+                    if (newIds.isNotEmpty()) {
+                        val pls = Library.playlists(this).map { pl ->
+                            if (pl.id == job.playlistId) pl.copy(items = (pl.items + newIds).distinct()) else pl
+                        }
+                        Library.savePlaylists(this, pls)
+                    }
+                }
+                DownloadManager.update(job.id) { it.copy(status = Status.DONE, progress = 1f, text = "Concluído (áudio + capa salvos)") }
             }.onFailure { e ->
                 DownloadManager.update(job.id) { it.copy(status = Status.ERROR, text = (e.message ?: "erro").lineSequence().lastOrNull { l -> l.isNotBlank() }?.take(160) ?: "erro") }
             }
@@ -106,4 +126,3 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 }
-

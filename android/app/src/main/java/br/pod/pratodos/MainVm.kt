@@ -11,10 +11,10 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.guava.await
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -29,6 +29,8 @@ data class PlayerUi(
 class MainVm(app: Application) : AndroidViewModel(app) {
     private val ctx get() = getApplication<Application>()
     val episodes = MutableStateFlow<List<Episode>>(emptyList())
+    val playlists = MutableStateFlow<List<Playlist>>(emptyList())
+    val selectedPlaylistId = MutableStateFlow<String?>(null)
     val volumes = MutableStateFlow(Library.volumes(app))
     val selected = MutableStateFlow(Library.selected(app))
     val category = MutableStateFlow(Library.category(app))
@@ -47,6 +49,13 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             controller = MediaController.Builder(ctx, token).buildAsync().await()
             controller?.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) = sync()
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    val mediaId = mediaItem?.mediaId ?: return
+                    episodes.value.firstOrNull { it.id == mediaId }?.let { ep ->
+                        player.value = player.value.copy(episode = ep)
+                    }
+                    sync()
+                }
             })
             while (true) { // atualiza barra de progresso e guarda posição
                 sync()
@@ -71,28 +80,74 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             volumes.value = Library.volumes(ctx)
             selected.value = Library.selected(ctx)
-            episodes.value = withContext(Dispatchers.IO) { Library.scan(ctx) }
+            val (eps, pls) = withContext(Dispatchers.IO) { Library.scan(ctx) to Library.playlists(ctx) }
+            episodes.value = eps
+            playlists.value = pls
         }
     }
 
     fun select(v: Volume) { Library.select(ctx, v); refresh() }
 
-    fun download(url: String) = DownloadManager.enqueue(ctx, url, category.value)
-    fun setCategory(c: Category) { Library.setCategory(ctx, c); category.value = c }
+    fun download(url: String) = DownloadManager.enqueue(ctx, url, category.value, selectedPlaylistId.value)
+
+    fun setCategory(c: Category) {
+        Library.setCategory(ctx, c)
+        category.value = c
+        selectedPlaylistId.value = null
+    }
+
+    fun selectPlaylist(id: String?) { selectedPlaylistId.value = id }
+
+    fun createPlaylist(name: String, initialEpisodeId: String? = null) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        val pl = Playlist(
+            id = System.currentTimeMillis().toString(),
+            name = trimmed,
+            category = category.value,
+            items = if (initialEpisodeId != null) listOf(initialEpisodeId) else emptyList(),
+        )
+        val next = playlists.value + pl
+        Library.savePlaylists(ctx, next)
+        playlists.value = next
+        selectedPlaylistId.value = pl.id
+    }
+
+    fun deletePlaylist(pl: Playlist) {
+        val next = playlists.value.filterNot { it.id == pl.id }
+        Library.savePlaylists(ctx, next)
+        playlists.value = next
+        if (selectedPlaylistId.value == pl.id) selectedPlaylistId.value = null
+    }
+
+    fun toggleInPlaylist(pl: Playlist, ep: Episode) {
+        val next = playlists.value.map {
+            if (it.id != pl.id) it
+            else if (ep.id in it.items) it.copy(items = it.items - ep.id)
+            else it.copy(items = it.items + ep.id)
+        }
+        Library.savePlaylists(ctx, next)
+        playlists.value = next
+    }
+
     fun move(ep: Episode, to: Category) {
         if (player.value.episode?.id == ep.id) { controller?.stop(); controller?.clearMediaItems(); player.value = PlayerUi() }
         Library.move(ctx, ep, to); refresh()
     }
 
-    fun play(ep: Episode) {
+    private fun toMediaItem(ep: Episode) = MediaItem.Builder()
+        .setMediaId(ep.id)
+        .setUri(Uri.fromFile(ep.file))
+        .setMediaMetadata(
+            MediaMetadata.Builder().setTitle(ep.title).setArtworkUri(ep.thumb?.let(Uri::parse)).build()
+        ).build()
+
+    fun play(ep: Episode, queue: List<Episode> = listOf(ep)) {
         val c = controller ?: return
-        if (player.value.episode?.id == ep.id) { togglePlay(); return }
-        val item = MediaItem.Builder()
-            .setUri(Uri.fromFile(ep.file))
-            .setMediaMetadata(
-                MediaMetadata.Builder().setTitle(ep.title).setArtworkUri(ep.thumb?.let(Uri::parse)).build()
-            ).build()
-        c.setMediaItem(item, Library.savedPos(ctx, ep.id))
+        if (player.value.episode?.id == ep.id && queue.size <= 1) { togglePlay(); return }
+        val list = if (ep in queue) queue else listOf(ep)
+        val idx = list.indexOfFirst { it.id == ep.id }.coerceAtLeast(0)
+        c.setMediaItems(list.map(::toMediaItem), idx, Library.savedPos(ctx, ep.id))
         c.prepare()
         c.play()
         player.value = player.value.copy(episode = ep)
@@ -110,10 +165,11 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun delete(ep: Episode) {
         if (player.value.episode?.id == ep.id) { controller?.stop(); controller?.clearMediaItems(); player.value = PlayerUi() }
-        ep.file.delete()
+        Library.deleteFileAndThumbs(ep)
+        val nextPls = playlists.value.map { it.copy(items = it.items - ep.id) }
+        Library.savePlaylists(ctx, nextPls)
         refresh()
     }
 
     override fun onCleared() { controller?.release() }
 }
-
