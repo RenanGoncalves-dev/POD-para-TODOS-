@@ -9,13 +9,29 @@ let offline = new Set();
 const CATS = [["podcasts", "🎙 Podcasts"], ["musicas", "🎵 Músicas"], ["djsets", "🎛 DJ Sets"]];
 let cat = localStorage.getItem("pod-cat") || "podcasts";
 let curPl = null; // id da playlist selecionada (ou null para "Todas")
-let queue = []; // fila de reprodução atual (para tocar playlist em sequência)
+let queue = []; // fila de reprodução atual
+let shuffle = false;
+let sleepUntil = 0; // timestamp do sleep timer
+
+// ---- Tema Claro / Escuro ----
+function applyTheme(light) {
+  document.body.classList.toggle("light", light);
+  $("#themeBtn").textContent = light ? "🌙 Escuro" : "☀️ Claro";
+  localStorage.setItem("pod-theme", light ? "light" : "dark");
+}
+applyTheme(localStorage.getItem("pod-theme") === "light");
+$("#themeBtn").onclick = () => applyTheme(!document.body.classList.contains("light"));
 
 // mesma normalização que o navegador usa na chave do cache
 const pathOf = (file) => new URL("/audio/" + file, location.href).pathname;
 
 const fmt = (s) => (s ? `${Math.floor(s / 60)}min` : "");
-const mb = (b) => (b ? (b / 1048576).toFixed(1) + " MB" : "");
+const fmtClock = (s) => {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec < 10 ? "0" : ""}${sec}`;
+};
+const mb = (b) => (b ? (b > 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : (b / 1048576).toFixed(1) + " MB") : "");
 
 async function refreshOffline() {
   const c = await caches.open(CACHE);
@@ -43,13 +59,23 @@ async function load() {
 
 function getVisibleEpisodes() {
   const activePl = playlists.find((p) => p.id === curPl && p.category === cat);
+  const q = ($("#q")?.value || "").trim().toLowerCase();
+  const sort = $("#sort")?.value || "recent";
   let list = eps.filter((e) => (e.category || "podcasts") === cat && (navigator.onLine || (e.file && offline.has(pathOf(e.file)))));
   if (activePl) {
     const set = new Set(activePl.items);
     list = list.filter((e) => set.has(e.id));
   }
+  if (q) {
+    list = list.filter((e) => (e.title || "").toLowerCase().includes(q) || (e.channel || "").toLowerCase().includes(q));
+  }
+  if (sort === "az") list = [...list].sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+  else if (sort === "size") list = [...list].sort((a, b) => (b.size || 0) - (a.size || 0));
   return list;
 }
+
+$("#q").oninput = render;
+$("#sort").onchange = render;
 
 function render() {
   const list = $("#list");
@@ -61,12 +87,13 @@ function render() {
     const activePl = playlists.find((p) => p.id === curPl && p.category === cat);
     list.innerHTML = activePl
       ? `<div class="empty">A playlist <b>${activePl.name}</b> está vazia.<br>Toque no botão <b>➕</b> de qualquer faixa ou cole um link acima para baixar direto nela.</div>`
-      : `<div class="empty">Nada aqui ainda.<br>Cole um link acima: o áudio e a capa serão salvos em <b>${CATS.find((c) => c[0] === cat)[1]}</b>.</div>`;
+      : `<div class="empty">Nada encontrado aqui.<br>Cole um link ou digite o nome acima: o áudio e a capa serão salvos em <b>${CATS.find((c) => c[0] === cat)[1]}</b>.</div>`;
   }
   for (const e of visible) {
     const path = e.file ? pathOf(e.file) : "";
     const saved = path && offline.has(path);
     const epPls = playlists.filter((p) => p.items.includes(e.id));
+    const savedPos = +(localStorage.getItem("pos:" + e.id) || 0);
     const d = document.createElement("div");
     d.className = "ep" + (cur && cur.id === e.id ? " on" : "");
     d.innerHTML = `<img src="${e.thumb || ""}" loading="lazy" alt="">
@@ -74,6 +101,12 @@ function render() {
       e.status === "done" ? mb(e.size) : e.status + (e.error ? " ⚠" : "")}</div><div class="badges"></div></div><div class="a"></div>`;
     d.querySelector(".t").textContent = e.title;
     const badges = d.querySelector(".badges");
+    if (savedPos > 10) {
+      const sp = document.createElement("span");
+      sp.className = "badge prog";
+      sp.textContent = "⏱ Retomar " + fmtClock(savedPos);
+      badges.append(sp);
+    }
     epPls.forEach((p) => {
       const sp = document.createElement("span");
       sp.className = "badge";
@@ -117,7 +150,7 @@ function renderPlaylistsBar() {
   const head = $("#plhead");
   bar.innerHTML = "";
   const catPls = playlists.filter((p) => p.category === cat);
-  if (! catPls.some((p) => p.id === curPl)) curPl = null;
+  if (!catPls.some((p) => p.id === curPl)) curPl = null;
 
   bar.append(btn("Todas", curPl === null ? "plchip on" : "plchip", () => { curPl = null; render(); }));
   for (const p of catPls) {
@@ -280,17 +313,59 @@ function play(e, path, list = null) {
   au.ontimeupdate = () => localStorage.setItem(key, au.currentTime);
   au.onended = () => {
     localStorage.removeItem(key);
-    const idx = queue.findIndex((x) => x.id === e.id);
-    if (idx >= 0 && idx + 1 < queue.length) {
-      const next = queue[idx + 1];
-      play(next, pathOf(next.file), queue);
-    }
+    playNext(1);
   };
   au.play();
   render();
   if ("mediaSession" in navigator)
     navigator.mediaSession.metadata = new MediaMetadata({ title: e.title, artist: e.channel || "", artwork: e.thumb ? [{ src: e.thumb }] : [] });
 }
+
+function playNext(dir) {
+  if (!queue.length || !cur) return;
+  if (shuffle && queue.length > 1) {
+    const others = queue.filter((x) => x.id !== cur.id);
+    const pick = others[Math.floor(Math.random() * others.length)];
+    play(pick, pathOf(pick.file), queue);
+    return;
+  }
+  const idx = queue.findIndex((x) => x.id === cur.id);
+  const next = queue[idx + dir];
+  if (next) play(next, pathOf(next.file), queue);
+}
+
+$("#prevBtn").onclick = () => playNext(-1);
+$("#nextBtn").onclick = () => playNext(1);
+$("#back15").onclick = () => ($("#au").currentTime = Math.max(0, $("#au").currentTime - 15));
+$("#fwd30").onclick = () => ($("#au").currentTime = $("#au").currentTime + 30);
+$("#shufBtn").onclick = () => {
+  shuffle = !shuffle;
+  $("#shufBtn").classList.toggle("sel", shuffle);
+};
+
+// ---- Sleep Timer (Desligamento automático) ----
+const SLEEP_STEPS = [0, 15, 30, 45, 60];
+let sleepIdx = 0;
+$("#sleepBtn").onclick = () => {
+  sleepIdx = (sleepIdx + 1) % SLEEP_STEPS.length;
+  const mins = SLEEP_STEPS[sleepIdx];
+  sleepUntil = mins ? Date.now() + mins * 60000 : 0;
+  $("#sleepBtn").classList.toggle("sel", mins > 0);
+  $("#sleepBtn").textContent = mins ? `⏲️ ${mins}m` : "⏲️ Off";
+};
+setInterval(() => {
+  if (!sleepUntil) return;
+  const rem = Math.ceil((sleepUntil - Date.now()) / 60000);
+  if (rem <= 0) {
+    $("#au").pause();
+    sleepUntil = 0;
+    sleepIdx = 0;
+    $("#sleepBtn").classList.remove("sel");
+    $("#sleepBtn").textContent = "⏲️ Off";
+  } else {
+    $("#sleepBtn").textContent = `⏲️ ${rem}m`;
+  }
+}, 5000);
 
 document.querySelectorAll("[data-r]").forEach(
   (b) =>
@@ -310,25 +385,42 @@ $("#f").onsubmit = async (ev) => {
   load();
 };
 
-// ---- Armazenamento: cartão no PC (servidor) e importação do cartão do celular ----
+// ---- Armazenamento: escolher qualquer pasta no PC (Linux/Windows) ou cartão SD ----
 async function loadStorage() {
   try {
     const s = await (await fetch("/api/storage")).json();
-    $("#st").textContent = `Salvando em: ${s.current}` + (s.available ? "" : " (indisponível — cartão removido?)");
+    const freeStr = s.free ? ` (${mb(s.free)} livres)` : "";
+    $("#st").textContent = `Pasta atual: ${s.current}${freeStr}` + (s.available ? "" : " (indisponível — unidade removida?)");
+    $("#customPath").value = s.current;
     const box = $("#cards");
     box.innerHTML = "";
-    s.cards.forEach((p) => box.append(btn("Usar cartão: " + p, "g", () => setStorage(p))));
-    if (s.current !== s.default) box.append(btn("Voltar ao disco padrão", "g", () => setStorage("")));
+    s.cards.forEach((p) => box.append(btn("💾 Cartão/Pendrive: " + p, "", () => setStorage(p, false))));
+    if (s.current !== s.default) box.append(btn("↩ Voltar à pasta padrão", "", () => setStorage("", false)));
   } catch {}
 }
-async function setStorage(path) {
-  const r = await fetch("/api/storage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+async function setStorage(path, exact) {
+  const r = await fetch("/api/storage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, exact }),
+  });
   const j = await r.json();
-  if (!r.ok) return alert(j.detail || "Erro");
-  alert(`Pronto! ${j.recognized} arquivo(s) reconhecido(s) no local.`);
+  if (!r.ok) return alert(j.detail || "Erro ao alterar pasta");
+  alert(`Pasta ativa: ${j.current}\n${j.recognized} arquivo(s) novo(s) reconhecido(s).`);
   loadStorage();
   load();
 }
+$("#pickDir").onclick = async () => {
+  const r = await fetch("/api/storage/pick", { method: "POST" });
+  const j = await r.json();
+  if (!r.ok) return alert(j.detail || "Erro ao escolher pasta");
+  if (j.cancelled) return;
+  alert(`Pasta escolhida: ${j.current}\n${j.recognized} arquivo(s) reconhecido(s).`);
+  loadStorage();
+  load();
+};
+$("#openDir").onclick = () => fetch("/api/storage/open", { method: "POST" });
+$("#setPathBtn").onclick = () => setStorage($("#customPath").value, true);
 $("#scan").onclick = async () => {
   const j = await (await fetch("/api/storage/scan", { method: "POST" })).json();
   alert(`${j.recognized} arquivo(s) novo(s) reconhecido(s).`);

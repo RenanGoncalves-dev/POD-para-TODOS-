@@ -8,47 +8,54 @@
 <link rel="icon" href="icons/icon.svg">
 <title>POD</title>
 <style>
-:root{--bg:#0f0f12;--card:#1a1a20;--card2:#23232b;--red:#ff4d4d;--mut:#8b8b98}
+:root{--bg:#0f0f12;--card:#1a1a20;--card2:#23232b;--txt:#f1f1f4;--red:#ff4d4d;--mut:#8b8b98;--brd:#33333d;--on:#2a1a1e;--plbg:#202028}
+body.light{--bg:#f4f5f8;--card:#ffffff;--card2:#ebedf3;--txt:#16161a;--red:#e53935;--mut:#646674;--brd:#d5d7e0;--on:#ffeaea;--plbg:#ffffff}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:var(--bg);color:#f1f1f4;font:15px/1.35 system-ui,sans-serif;padding-bottom:170px}
-.wrap{max-width:720px;margin:0 auto;padding:0 16px}
-header{padding:22px 0 8px}
+body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.35 system-ui,sans-serif;padding-bottom:205px;transition:background .2s,color .2s}
+.wrap{max-width:740px;margin:0 auto;padding:0 16px}
+header{padding:20px 0 8px;display:flex;align-items:center;justify-content:space-between}
 h1{margin:0;font-size:26px;letter-spacing:-.5px}h1 span{color:var(--red)}
 .sub{color:var(--mut);font-size:13px;margin-top:2px}
-.box{background:var(--card);border-radius:20px;padding:14px;margin:14px 0}
+.box{background:var(--card);border-radius:20px;padding:14px;margin:12px 0;box-shadow:0 2px 10px #0001}
 form{display:flex;flex-direction:column;gap:10px}
-input[type=text],input:not([type]){width:100%;padding:14px;border-radius:14px;border:1px solid #33333d;background:var(--card2);color:#fff;font-size:15px;outline:none}
-input:focus{border-color:var(--red)}
-button{font:inherit;border:0;border-radius:12px;padding:9px 13px;background:var(--card2);color:#fff;font-weight:600;cursor:pointer}
+input[type=text],input:not([type]),select{width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--brd);background:var(--card2);color:var(--txt);font-size:14px;outline:none}
+input:focus,select:focus{border-color:var(--red)}
+button{font:inherit;border:0;border-radius:12px;padding:9px 13px;background:var(--card2);color:var(--txt);font-weight:600;cursor:pointer}
 button:active{transform:scale(.97)}
-form button{background:var(--red);padding:14px;font-size:16px;border-radius:14px}
-button.ok{background:#1f6f3a}button.ic{width:38px;height:38px;padding:0;border-radius:50%;font-size:15px}
-button.play{background:var(--red)}
-#tabs,#plbar{display:flex;gap:8px;overflow-x:auto;margin:14px 0 8px;padding-bottom:2px;align-items:center}
+form button{background:var(--red);color:#fff;padding:14px;font-size:16px;border-radius:14px}
+button.ok{background:#1f6f3a;color:#fff}button.ic{width:38px;height:38px;padding:0;border-radius:50%;font-size:15px}
+button.play{background:var(--red);color:#fff}
+#tabs,#plbar{display:flex;gap:8px;overflow-x:auto;margin:12px 0 8px;padding-bottom:2px;align-items:center}
 .tab{white-space:nowrap;background:var(--card);color:var(--mut);border-radius:999px;padding:10px 16px}
 .tab.on{background:var(--red);color:#fff}
-.plchip{white-space:nowrap;background:var(--card);color:#ddd;border:1px solid #2e2e38;border-radius:999px;padding:7px 13px;font-size:13px}
-.plchip.on{background:#fff;color:#111;border-color:#fff}
+.plchip{white-space:nowrap;background:var(--card);color:var(--txt);border:1px solid var(--brd);border-radius:999px;padding:7px 13px;font-size:13px}
+.plchip.on{background:var(--txt);color:var(--bg);border-color:var(--txt)}
 .plchip.add{border-style:dashed;color:var(--red)}
-#plhead{display:flex;align-items:center;justify-content:space-between;background:var(--card);padding:10px 14px;border-radius:14px;margin-bottom:10px}
-.ep{display:flex;gap:12px;padding:10px;margin-bottom:10px;background:var(--card);border-radius:18px;align-items:center}
-.ep.on{background:#2a1a1e}
+#plhead{display:flex;align-items:center;justify-content:space-between;background:var(--card);padding:10px 14px;border-radius:14px;margin-bottom:10px;flex-wrap:wrap;gap:8px}
+.toolbar{display:flex;gap:8px;margin:10px 0}
+.toolbar input{flex:1}
+.toolbar select{width:auto}
+.ep{display:flex;gap:12px;padding:10px;margin-bottom:10px;background:var(--card);border-radius:18px;align-items:center;box-shadow:0 2px 8px #0001}
+.ep.on{background:var(--on)}
 .ep img{width:72px;height:72px;object-fit:cover;border-radius:14px;background:var(--card2);flex:none}
 .i{flex:1;min-width:0}
 .t{font-weight:600;font-size:14px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .s{font-size:12px;color:var(--mut);margin-top:3px}
 .badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.badge{font-size:11px;background:var(--card2);color:#ccc;padding:2px 8px;border-radius:99px}
+.badge{font-size:11px;background:var(--card2);color:var(--txt);padding:2px 8px;border-radius:99px}
+.badge.prog{color:var(--red);font-weight:600}
 .a{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
 .a .row{display:flex;gap:5px}
-details{margin-top:10px}summary{color:var(--mut);font-size:13px;cursor:pointer}
-details .box{margin:8px 0}details button{margin:4px 4px 0 0;font-size:13px}
-#player{position:fixed;bottom:0;left:0;right:0;background:#202028;border-radius:24px 24px 0 0;padding:12px 16px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px #000a}
-#player .in{max-width:720px;margin:0 auto}
+details{margin-top:10px}summary{color:var(--mut);font-size:13px;cursor:pointer;font-weight:600}
+details .box{margin:8px 0;background:var(--card2)}details button{margin:4px 4px 0 0;font-size:13px;background:var(--card)}
+.pathrow{display:flex;gap:6px;margin-top:8px}
+.pathrow input{flex:1;background:var(--card)}
+#player{position:fixed;bottom:0;left:0;right:0;background:var(--plbg);border-top:1px solid var(--brd);border-radius:24px 24px 0 0;padding:12px 16px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px #0005}
+#player .in{max-width:740px;margin:0 auto}
 #pt{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}
-audio{width:100%;height:40px;color-scheme:dark}
-.ctl{display:flex;gap:8px;margin-top:8px;justify-content:space-between}
-.ctl button{flex:1;font-size:13px}.ctl button.sel{background:var(--red)}
+audio{width:100%;height:38px}
+.ctl{display:flex;gap:6px;margin-top:8px;justify-content:space-between;flex-wrap:wrap}
+.ctl button{flex:1;font-size:12px;padding:7px 8px;min-width:42px}.ctl button.sel{background:var(--red);color:#fff}
 .empty{text-align:center;color:var(--mut);padding:40px 10px}
 .modal{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
 .modal[hidden]{display:none}
@@ -58,25 +65,58 @@ audio{width:100%;height:40px;color-scheme:dark}
 </head>
 <body>
 <div class="wrap">
-<header><h1>🎧 <span>POD</span></h1><div class="sub">Seus podcasts, músicas e DJ sets offline</div></header>
+<header>
+  <div><h1>🎧 <span>POD</span></h1><div class="sub">Seus podcasts, músicas e DJ sets offline</div></div>
+  <button id="themeBtn" title="Alternar modo claro/escuro">☀️ Claro</button>
+</header>
 <div class="box">
-<form id="f"><input id="u" placeholder="Cole o link do vídeo, playlist ou canal" required><button>⬇ Baixar áudio em <span id="dest"></span></button></form>
+<form id="f"><input id="u" placeholder="Cole o link do YouTube ou digite o nome para buscar e baixar" required><button>⬇ Baixar áudio em <span id="dest"></span></button></form>
 <div class="s" id="net"></div>
-<details><summary>💾 Armazenamento / cartão de memória / OBS</summary>
-<div class="box"><div class="s" id="st"></div><div id="cards"></div>
-<div class="s" style="margin-top:8px">🎥 Overlay para OBS (Fonte de Navegador, 600×160):<br><b id="ovl" style="user-select:all"></b></div>
-<button id="scan">🔄 Reconhecer arquivos da pasta</button>
-<button id="imp">📥 Importar do cartão do celular</button>
-<input type="file" id="file" accept="audio/*,.m4a,.opus,.webm" multiple hidden></div></details>
+<details><summary>💾 Pasta de salvamento (PC / Cartão SD) e Overlay OBS</summary>
+<div class="box">
+  <div class="s" id="st"></div>
+  <div style="margin-top:6px">
+    <button id="pickDir" class="play">📁 Escolher pasta no PC…</button>
+    <button id="openDir">📂 Abrir pasta atual no PC</button>
+    <button id="scan">🔄 Reconhecer arquivos da pasta</button>
+    <button id="imp">📥 Importar do cartão do celular</button>
+  </div>
+  <div class="pathrow">
+    <input id="customPath" placeholder="Ou digite/cole o caminho da pasta (ex: D:\Podcasts ou /mnt/hd/POD)">
+    <button id="setPathBtn">Usar pasta</button>
+  </div>
+  <div id="cards" style="margin-top:6px"></div>
+  <div class="s" style="margin-top:10px">🎥 Overlay para OBS (Fonte de Navegador, 600×160):<br><b id="ovl" style="user-select:all"></b></div>
+  <input type="file" id="file" accept="audio/*,.m4a,.opus,.webm" multiple hidden>
+</div></details>
 </div>
 <div id="tabs"></div>
 <div id="plbar"></div>
 <div id="plhead" hidden></div>
+<div class="toolbar">
+  <input id="q" placeholder="🔍 Filtrar na biblioteca por título ou canal…">
+  <select id="sort">
+    <option value="recent">Mais recentes</option>
+    <option value="az">Nome (A–Z)</option>
+    <option value="size">Tamanho</option>
+  </select>
+</div>
 <main id="list"></main>
 </div>
 <div id="modal" class="modal" hidden><div class="card" id="mcard"></div></div>
 <div id="player" hidden><div class="in"><div id="pt"></div>
 <audio id="au" controls></audio>
-<div class="ctl"><button data-r="1">1x</button><button data-r="1.25">1.25x</button><button data-r="1.5">1.5x</button><button data-r="1.75">1.75x</button><button data-r="2">2x</button></div></div></div>
+<div class="ctl">
+  <button id="prevBtn" title="Anterior">⏮</button>
+  <button id="back15" title="Voltar 15s">-15s</button>
+  <button id="fwd30" title="Avançar 30s">+30s</button>
+  <button id="nextBtn" title="Próximo">⏭</button>
+  <button id="shufBtn" title="Ordem aleatória">🔀</button>
+  <button data-r="1" class="sel">1x</button>
+  <button data-r="1.25">1.25x</button>
+  <button data-r="1.5">1.5x</button>
+  <button data-r="2">2x</button>
+  <button id="sleepBtn" title="Desligar sozinho (Sleep Timer)">⏲️ Off</button>
+</div></div></div>
 <script src="app.js"></script>
 </body></html>
