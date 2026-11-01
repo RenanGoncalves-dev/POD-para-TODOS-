@@ -108,6 +108,17 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun download(url: String) = DownloadManager.enqueue(ctx, url, category.value, selectedPlaylistId.value)
 
+    fun importUris(uris: List<Uri>) {
+        val cat = category.value
+        val plId = selectedPlaylistId.value
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                uris.forEach { u -> runCatching { Library.importUri(ctx, u, cat, plId) } }
+            }
+            refresh()
+        }
+    }
+
     fun setCategory(c: Category) {
         Library.setCategory(ctx, c)
         category.value = c

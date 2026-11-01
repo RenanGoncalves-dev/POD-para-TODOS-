@@ -76,6 +76,10 @@ class MainActivity : ComponentActivity() {
             i.getStringExtra(Intent.EXTRA_TEXT)?.let { t ->
                 Regex("""https?://\S+""").find(t)?.value?.let { vm.download(it) }
             }
+            @Suppress("DEPRECATION")
+            (i.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))?.let { uri ->
+                vm.importUris(listOf(uri))
+            }
         }
     }
 }
@@ -130,6 +134,9 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     var confirmDelete by remember { mutableStateOf<Episode?>(null) }
 
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val pickAudioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) vm.importUris(uris)
+    }
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33) notif.launch(Manifest.permission.POST_NOTIFICATIONS) }
 
     Scaffold(
@@ -202,7 +209,7 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                     OutlinedTextField(
                         value = url, onValueChange = { url = it }, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Link do YouTube ou digite o nome p/ buscar") },
+                        placeholder = { Text("Link (YouTube, Jovem Nerd, .mp3) ou nome") },
                         shape = RoundedCornerShape(14.dp),
                         trailingIcon = {
                             IconButton(onClick = {
@@ -218,6 +225,15 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                     ) {
                         val dest = category.label + (activePlaylist?.let { " → ${it.name}" } ?: "")
                         Icon(Icons.Default.Download, null); Spacer(Modifier.width(8.dp)); Text("Baixar áudio em $dest", fontSize = 15.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { pickAudioLauncher.launch(arrayOf("audio/*")) },
+                        modifier = Modifier.fillMaxWidth().height(44.dp), shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Icon(Icons.Default.FolderOpen, null, tint = Red)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Importar arquivo (.mp3/.m4a) do celular", fontSize = 13.sp)
                     }
                     Text(
                         when {

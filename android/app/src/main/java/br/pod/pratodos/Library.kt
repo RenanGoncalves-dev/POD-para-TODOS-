@@ -1,10 +1,13 @@
 package br.pod.pratodos
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URL
+import java.security.MessageDigest
 
 data class Volume(val label: String, val dir: File, val removable: Boolean)
 
@@ -34,9 +37,16 @@ data class Playlist(
 
 /** Armazenamento: celular e cartão SD. Tudo que já estiver nas pastas é reconhecido automaticamente. */
 object Library {
-    private val AUDIO = setOf("m4a", "mp3", "opus", "ogg", "webm", "aac", "wav", "flac")
+    val AUDIO = setOf("m4a", "mp3", "opus", "ogg", "webm", "aac", "wav", "flac")
     private val THUMBS = listOf("jpg", "jpeg", "webp", "png")
     private val ID_RE = Regex("""\[([\w-]{11})]$""")
+    private val UNSAFE_RE = Regex("""[<>:"/\\|?*\x00-\x1f]+""")
+
+    fun safeFileName(name: String, maxLen: Int = 100): String =
+        UNSAFE_RE.replace(name, " ").replace(Regex("""\s+"""), " ").trim().trim('.').take(maxLen).ifBlank { "episodio" }
+
+    fun shortHash(input: String): String =
+        MessageDigest.getInstance("SHA-1").digest(input.toByteArray()).joinToString("") { "%02x".format(it) }.take(7)
 
     fun volumes(ctx: Context): List<Volume> =
         ctx.getExternalFilesDirs(null).filterNotNull().mapIndexed { i, f ->
@@ -63,9 +73,32 @@ object Library {
         return THUMBS.map { File(parent, "$stem.$it") }.filter { it.isFile }
     }
 
+    /** Extrai título e capa embutida (ID3 APIC / MP4 covr) de arquivos .mp3/.m4a usando MediaMetadataRetriever. */
+    fun extractEmbeddedMetadata(audioFile: File): String? {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(audioFile.absolutePath)
+            val pic = r.embeddedPicture
+            if (pic != null && pic.isNotEmpty()) {
+                val jpg = File(audioFile.parentFile, "${audioFile.nameWithoutExtension}.jpg")
+                if (!jpg.isFile) jpg.writeBytes(pic)
+            }
+            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { r.release() }
+        }
+    }
+
     private fun resolveThumb(audioFile: File, ytId: String?): String? {
         companionThumbs(audioFile).firstOrNull()?.let { return it.toURI().toString() }
-        if (ytId != null) {
+        // Tenta extrair capa ID3 embutida no próprio arquivo (.mp3 de podcasts como Jovem Nerd)
+        extractEmbeddedMetadata(audioFile)
+        companionThumbs(audioFile).firstOrNull()?.let { return it.toURI().toString() }
+
+        val isRealYt = ytId != null && !ytId.startsWith("ext_") && !ytId.startsWith("loc_")
+        if (isRealYt) {
             val parent = audioFile.parentFile
             val target = File(parent, "${audioFile.nameWithoutExtension}.jpg")
             runCatching {
@@ -77,6 +110,34 @@ object Library {
             return "https://i.ytimg.com/vi/$ytId/mqdefault.jpg"
         }
         return null
+    }
+
+    /** Importa um arquivo de áudio (.mp3, .m4a, etc.) escolhido no celular para a pasta da categoria. */
+    fun importUri(ctx: Context, uri: Uri, category: Category, playlistId: String?): String? {
+        val vol = selected(ctx)
+        val dir = catDir(vol, category)
+        val rawName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "podcast.mp3"
+        val ext = rawName.substringAfterLast('.', "mp3").lowercase().let { if (it in AUDIO) it else "mp3" }
+        val eid = "loc_" + shortHash(rawName + System.currentTimeMillis())
+        val tmp = File(dir, ".import_$eid.$ext")
+        ctx.contentResolver.openInputStream(uri)?.use { inp ->
+            tmp.outputStream().use { out -> inp.copyTo(out) }
+        } ?: return null
+
+        val id3Title = extractEmbeddedMetadata(tmp)
+        val baseTitle = id3Title ?: rawName.substringBeforeLast('.').replace('_', ' ')
+        val finalFile = File(dir, "${safeFileName(baseTitle)} [$eid].$ext")
+        File(dir, ".import_$eid.jpg").takeIf { it.isFile }?.renameTo(File(dir, "${finalFile.nameWithoutExtension}.jpg"))
+        tmp.renameTo(finalFile)
+        extractEmbeddedMetadata(finalFile)
+
+        if (playlistId != null) {
+            val pls = playlists(ctx).map { pl ->
+                if (pl.id == playlistId) pl.copy(items = (pl.items + eid).distinct()) else pl
+            }
+            savePlaylists(ctx, pls)
+        }
+        return eid
     }
 
     /** Lê as subpastas por categoria; arquivos soltos na raiz contam como Podcasts. */
