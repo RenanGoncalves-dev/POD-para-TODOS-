@@ -81,9 +81,12 @@ def build_appimage():
         tool.chmod(0o755)
 
     out_appimage = dist_dir / "POD-Linux-x86_64.AppImage"
+    tmp_appimage = dist_dir / "POD-Linux-x86_64.AppImage.new"
+    tmp_appimage.unlink(missing_ok=True)
     env = {**os.environ, "ARCH": "x86_64", "APPIMAGE_EXTRACT_AND_RUN": "1"}
-    subprocess.check_call([str(tool), str(appdir), str(out_appimage)], env=env)
-    out_appimage.chmod(0o755)
+    subprocess.check_call([str(tool), str(appdir), str(tmp_appimage)], env=env)
+    tmp_appimage.chmod(0o755)
+    tmp_appimage.replace(out_appimage)
     print("AppImage gerado com sucesso:", out_appimage)
 
 

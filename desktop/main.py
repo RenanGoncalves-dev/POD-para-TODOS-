@@ -215,6 +215,7 @@ class PodWindow(QMainWindow):
         self.setWindowTitle("POD — Podcasts, Músicas e DJ Sets Offline")
         self.resize(1120, 740)
         self.setMinimumSize(820, 560)
+        self.setAcceptDrops(True)
 
         # Player Nativo Qt6
         self.audio_out = QAudioOutput()
@@ -344,13 +345,17 @@ class PodWindow(QMainWindow):
         dl_layout.setContentsMargins(14, 12, 14, 12)
         dl_layout.setSpacing(10)
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Cole o link do YouTube (vídeo, playlist, canal) ou digite o nome para buscar e baixar…")
+        self.url_input.setPlaceholderText("Cole link (YouTube, Jovem Nerd, .mp3, RSS…) ou digite o nome p/ buscar — ou arraste arquivos .mp3 aqui")
         self.url_input.returnPressed.connect(self.start_download)
         dl_layout.addWidget(self.url_input, 1)
         self.dl_btn = QPushButton("⬇ Baixar Áudio")
         self.dl_btn.setObjectName("primary")
         self.dl_btn.clicked.connect(self.start_download)
         dl_layout.addWidget(self.dl_btn)
+        self.imp_btn = QPushButton("📥 Importar Arquivo")
+        self.imp_btn.setToolTip("Importar arquivos .mp3, .m4a, .ogg já baixados no computador")
+        self.imp_btn.clicked.connect(self.import_files_dialog)
+        dl_layout.addWidget(self.imp_btn)
         cv.addWidget(dl_box)
 
         # Barra de título da visão atual + filtro de busca + ordenação + ações da playlist
@@ -660,12 +665,15 @@ class PodWindow(QMainWindow):
             self.ep_layout.addWidget(card)
         self.ep_layout.addStretch()
 
-    # ---- Downloads ----
+    # ---- Downloads & Importação (Links externos, Jovem Nerd, RSS, Arrastar e Soltar) ----
     def start_download(self):
         raw = self.url_input.text().strip()
         if not raw:
             return
         self.url_input.clear()
+        self.enqueue_url(raw)
+
+    def enqueue_url(self, raw: str):
         cat = self.current_cat
         pl_id = self.current_pl_id
 
@@ -675,6 +683,50 @@ class PodWindow(QMainWindow):
 
         threading.Thread(target=bg, daemon=True).start()
         QTimer.singleShot(600, self.reload_data)
+
+    def import_files_dialog(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Importar arquivos de áudio para o POD",
+            str(Path.home()),
+            "Áudios (*.mp3 *.m4a *.opus *.ogg *.webm *.aac *.wav *.flac)",
+        )
+        if not files:
+            return
+        self.import_local_paths([Path(f) for f in files])
+
+    def import_local_paths(self, paths: list[Path]):
+        cat = self.current_cat
+        pl_id = self.current_pl_id
+        count = 0
+        for p in paths:
+            try:
+                backend.import_local_audio_file(p, cat, pl_id)
+                count += 1
+            except Exception:  # noqa: BLE001
+                pass
+        if count:
+            self.reload_data()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        md = event.mimeData()
+        local_files = []
+        if md.hasUrls():
+            for u in md.urls():
+                if u.isLocalFile():
+                    local_files.append(Path(u.toLocalFile()))
+                elif u.toString().startswith(("http://", "https://")):
+                    self.enqueue_url(u.toString())
+        elif md.hasText():
+            txt = md.text().strip()
+            if txt:
+                self.enqueue_url(txt)
+        if local_files:
+            self.import_local_paths(local_files)
 
     def on_tick(self):
         eps = backend.episodes()

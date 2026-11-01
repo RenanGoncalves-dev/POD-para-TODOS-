@@ -426,11 +426,25 @@ $("#scan").onclick = async () => {
   alert(`${j.recognized} arquivo(s) novo(s) reconhecido(s).`);
   load();
 };
-// Importa arquivos escolhidos no seletor do Android (aceita cartão SD) para o armazenamento offline do app.
+// Importa arquivos (.mp3, .m4a, etc.) escolhidos no PC ou celular para dentro da biblioteca e cache offline.
 $("#imp").onclick = () => $("#file").click();
+$("#impTop").onclick = () => $("#file").click();
 $("#file").onchange = async (ev) => {
+  const files = [...ev.target.files];
+  if (!files.length) return;
+  if (navigator.onLine) {
+    try {
+      for (const f of files) {
+        const qs = new URLSearchParams({ filename: f.name, category: cat, ...(curPl ? { playlist_id: curPl } : {}) });
+        await fetch("/api/upload?" + qs.toString(), { method: "POST", body: f });
+      }
+      ev.target.value = "";
+      await load();
+      return;
+    } catch {}
+  }
   const c = await caches.open(CACHE);
-  for (const f of ev.target.files) {
+  for (const f of files) {
     const m = /\[([\w-]{11})\]\.\w+$/.exec(f.name);
     const id = m ? m[1] : f.name;
     const path = pathOf(f.name);
