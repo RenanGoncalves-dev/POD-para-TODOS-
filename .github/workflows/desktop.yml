@@ -1,15 +1,26 @@
-name: Desktop (Linux + Windows)
+name: Build & Release (Android + Linux + Windows)
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  desktop:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact: POD-Linux
+            bin: dist-desktop/POD
+            out: dist-desktop/POD-Linux
+          - os: windows-latest
+            artifact: POD-Windows.exe
+            bin: dist-desktop/POD.exe
+            out: dist-desktop/POD-Windows.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -18,13 +29,42 @@ jobs:
           python-version: "3.12"
       - run: pip install -r desktop/requirements.txt
       - run: python desktop/build.py
+      - run: mv "${{ matrix.bin }}" "${{ matrix.out }}"
+        shell: bash
       - uses: actions/upload-artifact@v4
         with:
-          name: POD-${{ matrix.os }}
-          path: dist-desktop/*
-      - name: Anexar à release (tags v*)
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.out }}
+      - name: Publicar na Release (tags v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-desktop/*
+          files: ${{ matrix.out }}
+          generate_release_notes: true
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Compilar APK
+        working-directory: android
+        run: gradle --no-daemon assembleRelease
+      - run: mkdir -p dist && cp android/app/build/outputs/apk/release/app-release.apk dist/POD.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: POD-Android-APK
+          path: dist/POD.apk
+      - name: Publicar APK na Release (tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/POD.apk
+          generate_release_notes: true
