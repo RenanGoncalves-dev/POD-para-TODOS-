@@ -1,10 +1,11 @@
-"""POD - servidor pessoal: baixa só o ÁUDIO de links do YouTube com yt-dlp,
+"""POD - servidor pessoal: baixa só o ÁUDIO de links (ou buscas) do YouTube com yt-dlp,
 salva a thumbnail local para uso offline e permite organizar em categorias e playlists."""
 import json
 import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 import urllib.request
@@ -65,6 +66,67 @@ def removable_mounts() -> list[str]:
     except OSError:
         pass
     return out
+
+
+def pick_folder_native(initial: str) -> str | None:
+    """Abre a janela nativa do Windows ou Linux para escolher qualquer pasta do PC."""
+    if os.name == "nt":
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            chosen = filedialog.askdirectory(initialdir=initial, title="Escolher pasta para salvar os áudios do POD")
+            root.destroy()
+            return chosen or None
+        except Exception:  # noqa: BLE001
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$f=New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "if($f.ShowDialog() -eq 'OK'){$f.SelectedPath}"
+            )
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, check=False)
+            return r.stdout.strip() or None
+
+    # Linux: tenta zenity, kdialog ou tkinter
+    if shutil.which("zenity"):
+        r = subprocess.run(
+            ["zenity", "--file-selection", "--directory", "--title=Escolher pasta do POD", f"--filename={initial}/"],
+            capture_output=True, text=True, check=False,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+        if r.returncode != 0:
+            return None
+    if shutil.which("kdialog"):
+        r = subprocess.run(
+            ["kdialog", "--getexistingdirectory", initial, "--title", "Escolher pasta do POD"],
+            capture_output=True, text=True, check=False,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+        if r.returncode != 0:
+            return None
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        chosen = filedialog.askdirectory(initialdir=initial, title="Escolher pasta do POD")
+        root.destroy()
+        return chosen or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def open_folder_native(folder: Path):
+    """Abre a pasta atual no Windows Explorer ou gerenciador de arquivos do Linux."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(str(folder))  # type: ignore[attr-defined]
+    elif shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", str(folder)])
 
 
 def db():
@@ -162,7 +224,7 @@ def companion_thumbs(audio_path: Path) -> list[Path]:
 
 
 def scan_audio_dir() -> int:
-    """Reconhece arquivos já existentes na pasta (ex.: cartão SD com episódios) e remove do banco os que sumiram."""
+    """Reconhece arquivos já existentes na pasta (ex.: cartão SD ou pasta do PC) e remove do banco os que sumiram."""
     AUDIO.mkdir(parents=True, exist_ok=True)
     found = 0
     present = set()
@@ -213,13 +275,15 @@ def add_to_playlist_db(pid: int, eid: str):
         c.execute("INSERT OR IGNORE INTO playlist_items(playlist_id, episode_id, pos) VALUES(?,?,?)", (pid, eid, pos))
 
 
-def job(url: str, cat: str = "podcasts", playlist_id: int | None = None):
+def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
+    # Permite colar tanto um link quanto digitar o nome do podcast/música para buscar no YouTube!
+    url = raw_url if raw_url.startswith(("http://", "https://")) else f"ytsearch1:{raw_url}"
     # 1) lista entradas rápido (para aparecerem como "baixando")
     try:
         with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist", "ignoreerrors": True, "js_runtimes": js_runtimes()}) as y:
             info = y.extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
-        upsert(id=url, title=url, status="error", error=str(e)[:300])
+        upsert(id=raw_url, title=raw_url, status="error", error=str(e)[:300])
         return
     entries = info.get("entries") if info else None
     items = [e for e in (entries or [info]) if e]
@@ -348,34 +412,68 @@ def playlists_remove_item(pid: int, eid: str):
     return {"ok": True}
 
 
-# ---------- Armazenamento ----------
+# ---------- Armazenamento (PC Linux/Windows e Cartão SD) ----------
 class StorageReq(BaseModel):
-    path: str  # pasta raiz do cartão (ou "" para voltar ao padrão)
+    path: str  # pasta escolhida (ou "" para voltar ao padrão)
+    exact: bool = False  # True = usa exatamente a pasta escolhida; False = cria subpasta POD (p/ raiz de cartão SD)
+
+
+def apply_storage_dir(target: Path) -> dict:
+    global AUDIO
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(400, f"Não consegui criar/abrir a pasta {target}: {e}")
+    if not os.access(target, os.W_OK):
+        raise HTTPException(400, "Sem permissão de escrita nessa pasta")
+    AUDIO = target
+    CONFIG.write_text(json.dumps({"audio_dir": str(target)}))
+    return {"current": str(AUDIO), "recognized": scan_audio_dir()}
 
 
 @app.get("/api/storage")
 def storage_info():
-    return {"current": str(AUDIO), "default": str(DEFAULT_AUDIO), "cards": removable_mounts(),
-            "available": AUDIO.exists()}
+    free = 0
+    try:
+        if AUDIO.exists():
+            free = shutil.disk_usage(AUDIO).free
+    except OSError:
+        pass
+    return {
+        "current": str(AUDIO),
+        "default": str(DEFAULT_AUDIO),
+        "cards": removable_mounts(),
+        "available": AUDIO.exists(),
+        "free": free,
+    }
 
 
 @app.post("/api/storage")
 def storage_set(req: StorageReq):
-    """Escolhe onde salvar. No cartão cria a pasta POD e reconhece o que já houver nela."""
-    global AUDIO
-    if req.path.strip():
-        target = Path(req.path.strip()) / "POD"
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise HTTPException(400, f"Não consegui escrever em {req.path}: {e}")
-        if not os.access(target, os.W_OK):
-            raise HTTPException(400, "Sem permissão de escrita nesse local")
-    else:
-        target = DEFAULT_AUDIO
-    AUDIO = target
-    CONFIG.write_text(json.dumps({"audio_dir": str(target)}))
-    return {"current": str(AUDIO), "recognized": scan_audio_dir()}
+    """Escolhe onde salvar no PC (Linux/Windows) ou cartão SD e reconhece o que já houver lá."""
+    raw = req.path.strip()
+    if not raw:
+        return apply_storage_dir(DEFAULT_AUDIO)
+    p = Path(raw).expanduser()
+    # Se for raiz de cartão/pendrive (ex: /media/user/SD ou E:\) e não exact, usa subpasta POD
+    target = p if (req.exact or p.name.upper() == "POD") else (p / "POD")
+    return apply_storage_dir(target)
+
+
+@app.post("/api/storage/pick")
+def storage_pick():
+    """Abre a janela nativa do Windows ou Linux para escolher a pasta onde salvar/ler os áudios."""
+    chosen = pick_folder_native(str(AUDIO if AUDIO.exists() else Path.home()))
+    if not chosen:
+        return {"cancelled": True, "current": str(AUDIO)}
+    return apply_storage_dir(Path(chosen))
+
+
+@app.post("/api/storage/open")
+def storage_open():
+    """Abre a pasta atual no gerenciador de arquivos do sistema (Windows Explorer / Linux)."""
+    open_folder_native(AUDIO)
+    return {"ok": True}
 
 
 @app.post("/api/storage/scan")
