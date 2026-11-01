@@ -3,7 +3,9 @@ e serve para o PWA do celular (que guarda os arquivos offline)."""
 import json
 import os
 import re
+import shutil
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 
@@ -14,10 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
+# POD_DATA permite o app desktop guardar os dados na pasta do usuário
+DATA = Path(os.environ.get("POD_DATA") or ROOT / "data")
 DEFAULT_AUDIO = DATA / "audio"
 CONFIG = DATA / "config.json"
-WEB = ROOT.parent / "web"
+# empacotado (PyInstaller) os arquivos web ficam dentro de _MEIPASS
+WEB = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else ROOT.parent) / "web"
 DATA.mkdir(parents=True, exist_ok=True)
 AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac"}
 ID_RE = re.compile(r"\[([\w-]{11})\]$")
@@ -35,9 +39,22 @@ def load_audio_dir() -> Path:
 AUDIO = load_audio_dir()
 
 
+def js_runtimes() -> dict:
+    """yt-dlp precisa de um runtime JS para o YouTube: usa deno ou node, se instalados."""
+    return {name: {} for name in ("deno", "node") if shutil.which(name)}
+
+
 def removable_mounts() -> list[str]:
-    """Pontos de montagem típicos de cartão SD / pendrive no Linux."""
+    """Cartão SD / pendrive: pontos de montagem no Linux, letras de unidade removível no Windows."""
     out = []
+    if os.name == "nt":
+        import ctypes
+        import string
+        for letter in string.ascii_uppercase:
+            drv = f"{letter}:\\"
+            if ctypes.windll.kernel32.GetDriveTypeW(drv) == 2 and os.path.exists(drv):  # 2 = removível
+                out.append(drv)
+        return out
     try:
         for line in Path("/proc/mounts").read_text().splitlines():
             mp = line.split()[1].replace("\\040", " ")
@@ -91,7 +108,7 @@ YDL_OPTS = {
     "windowsfilenames": True,  # nomes seguros p/ cartões FAT32/exFAT
     "trim_file_name": 120,
     "retries": 5,
-    "js_runtimes": {"node": {}},  # yt-dlp precisa de um runtime JS (usa o Node instalado)
+    "js_runtimes": js_runtimes(),  # yt-dlp precisa de um runtime JS (deno/node)
 }
 
 
@@ -142,7 +159,7 @@ def upsert(**kw):
 def job(url: str, cat: str = "podcasts"):
     # 1) lista entradas rápido (para aparecerem como "baixando")
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist", "ignoreerrors": True, "js_runtimes": {"node": {}}}) as y:
+        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist", "ignoreerrors": True, "js_runtimes": js_runtimes()}) as y:
             info = y.extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
         upsert(id=url, title=url, status="error", error=str(e)[:300])
@@ -251,6 +268,37 @@ def storage_set(req: StorageReq):
 @app.post("/api/storage/scan")
 def storage_scan():
     return {"recognized": scan_audio_dir()}
+
+
+# ---------- "Tocando agora" (overlay do OBS) ----------
+NOW = {"title": "", "channel": "", "thumb": "", "category": "", "playing": False, "pos": 0, "dur": 0}
+
+
+class NowReq(BaseModel):
+    title: str = ""
+    channel: str = ""
+    thumb: str = ""
+    category: str = ""
+    playing: bool = False
+    pos: float = 0
+    dur: float = 0
+
+
+@app.post("/api/nowplaying")
+def nowplaying_set(req: NowReq):
+    NOW.update(req.model_dump())
+    # arquivo de texto p/ a fonte "Texto (ler de arquivo)" do OBS
+    try:
+        line = f"{req.title} - {req.channel}" if req.title and req.playing else ""
+        (DATA / "nowplaying.txt").write_text(line, encoding="utf-8")
+    except OSError:
+        pass
+    return {"ok": True}
+
+
+@app.get("/api/nowplaying")
+def nowplaying_get():
+    return NOW
 
 
 @app.get("/audio/{name:path}")

@@ -1,0 +1,4 @@
+-r ../server/requirements.txt
+pyinstaller
+pywebview; sys_platform == "win32"
+

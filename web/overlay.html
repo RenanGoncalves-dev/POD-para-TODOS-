@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>POD - Overlay</title>
+<!--
+  Overlay "Tocando agora" para o OBS.
+  OBS > Fontes > + > Navegador > URL: http://localhost:8000/overlay.html > Largura 600, Altura 160
+  Opções na URL (separe com &):
+    ?hide=0        mantém visível mesmo pausado (padrão: some quando pausa)
+    &accent=ff4d4d cor de destaque (hex sem #)
+    &bg=transparent | solid   fundo do cartão (padrão: solid translúcido)
+    &progress=0    esconde a barra de progresso
+-->
+<style>
+:root{--accent:#ff4d4d}
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden;font-family:"Segoe UI",system-ui,sans-serif}
+#card{display:flex;align-items:center;gap:16px;width:580px;height:140px;margin:10px;padding:14px;border-radius:22px;
+  background:rgba(15,15,18,.88);color:#fff;transform:translateX(-120%);opacity:0;transition:transform .6s cubic-bezier(.2,.9,.2,1),opacity .4s}
+#card.show{transform:none;opacity:1}
+body.transp #card{background:transparent;text-shadow:0 2px 6px #000}
+#cover{width:112px;height:112px;border-radius:16px;object-fit:cover;background:#2a2a32;flex:none}
+.info{flex:1;min-width:0}
+#tag{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:700;display:flex;align-items:center;gap:8px}
+.eq{display:inline-flex;gap:2px;align-items:flex-end;height:12px}
+.eq i{width:3px;background:var(--accent);animation:b 0.9s infinite ease-in-out;border-radius:1px}
+.eq i:nth-child(2){animation-delay:.2s}.eq i:nth-child(3){animation-delay:.4s}
+.paused .eq i{animation-play-state:paused}
+@keyframes b{0%,100%{height:3px}50%{height:12px}}
+#title{font-size:22px;font-weight:700;margin-top:6px;line-height:1.15;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#chan{font-size:15px;opacity:.75;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#bar{height:5px;background:#ffffff26;border-radius:3px;margin-top:10px;overflow:hidden}
+#fill{height:100%;width:0;background:var(--accent);transition:width 1s linear}
+</style>
+</head>
+<body>
+<div id="card">
+  <img id="cover" alt="">
+  <div class="info">
+    <div id="tag"><span class="eq"><i></i><i></i><i></i></span><span id="cat">Tocando agora</span></div>
+    <div id="title"></div>
+    <div id="chan"></div>
+    <div id="bar"><div id="fill"></div></div>
+  </div>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+const hideWhenPaused = q.get("hide") !== "0";
+if (q.get("accent")) document.documentElement.style.setProperty("--accent", "#" + q.get("accent"));
+if (q.get("bg") === "transparent") document.body.classList.add("transp");
+if (q.get("progress") === "0") document.getElementById("bar").style.display = "none";
+const LABEL = { podcasts: "Podcast", musicas: "Música", djsets: "DJ Set" };
+const $ = (id) => document.getElementById(id);
+let lastTitle = null;
+
+async function tick() {
+  try {
+    const n = await (await fetch("/api/nowplaying", { cache: "no-store" })).json();
+    const visible = n.title && (n.playing || !hideWhenPaused);
+    $("card").classList.toggle("show", !!visible);
+    $("card").classList.toggle("paused", !n.playing);
+    if (n.title !== lastTitle) {
+      lastTitle = n.title;
+      $("title").textContent = n.title;
+      $("chan").textContent = n.channel || "";
+      $("cover").src = n.thumb || "";
+      $("cover").style.visibility = n.thumb ? "visible" : "hidden";
+    }
+    $("cat").textContent = "Ouvindo · " + (LABEL[n.category] || "");
+    $("fill").style.width = n.dur ? Math.min(100, (n.pos / n.dur) * 100) + "%" : "0";
+  } catch { $("card").classList.remove("show"); }
+}
+setInterval(tick, 1000);
+tick();
+</script>
+</body>
+</html>
+

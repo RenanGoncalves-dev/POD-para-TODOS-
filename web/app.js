@@ -118,6 +118,7 @@ async function del(e) {
 }
 
 function play(e, path) {
+  cur = e;
   const au = $("#au");
   $("#player").hidden = false;
   $("#pt").textContent = e.title;
@@ -185,6 +186,27 @@ $("#file").onchange = async (ev) => {
   await refreshOffline();
   render();
 };
+
+// ---- "Tocando agora": avisa o servidor para o overlay do OBS ----
+let cur = null;
+let lastReport = 0;
+function report(force) {
+  const now = Date.now();
+  if (!cur || (!force && now - lastReport < 2000)) return;
+  lastReport = now;
+  const au = $("#au");
+  fetch("/api/nowplaying", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: cur.title || "", channel: cur.channel || "", thumb: cur.thumb || "", category: cur.category || "podcasts",
+      playing: !au.paused && !au.ended, pos: au.currentTime || 0, dur: isFinite(au.duration) ? au.duration : 0,
+    }),
+  }).catch(() => {});
+}
+["play", "pause", "ended", "seeked", "loadedmetadata"].forEach((ev) => $("#au").addEventListener(ev, () => report(true)));
+$("#au").addEventListener("timeupdate", () => report(false));
+$("#ovl").textContent = location.origin + "/overlay.html";
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 addEventListener("online", load);
