@@ -22,6 +22,7 @@ data class Episode(
     val volume: String,
     val thumb: String?,
     val category: Category = Category.PODCASTS,
+    val savedPosMs: Long = 0L,
 )
 
 data class Playlist(
@@ -87,14 +88,16 @@ object Library {
                         val stem = f.nameWithoutExtension
                         val m = ID_RE.find(stem)
                         val ytId = m?.groupValues?.get(1)
+                        val id = ytId ?: stem
                         Episode(
-                            id = ytId ?: stem,
+                            id = id,
                             title = if (m != null) stem.removeSuffix(m.value).trim() else stem,
                             file = f,
                             size = f.length(),
                             volume = v.label,
                             thumb = resolveThumb(f, ytId),
                             category = cat,
+                            savedPosMs = savedPos(ctx, id),
                         )
                     }
             }
@@ -153,6 +156,9 @@ object Library {
 
     fun category(ctx: Context) = runCatching { Category.valueOf(prefs(ctx).getString("cat", "")!!) }.getOrDefault(Category.PODCASTS)
     fun setCategory(ctx: Context, c: Category) = prefs(ctx).edit().putString("cat", c.name).apply()
+
+    fun lightTheme(ctx: Context) = prefs(ctx).getBoolean("light_theme", false)
+    fun setLightTheme(ctx: Context, light: Boolean) = prefs(ctx).edit().putBoolean("light_theme", light).apply()
 
     fun savedPos(ctx: Context, id: String) = prefs(ctx).getLong("pos:$id", 0L)
     fun savePos(ctx: Context, id: String, ms: Long) = prefs(ctx).edit().putLong("pos:$id", ms).apply()

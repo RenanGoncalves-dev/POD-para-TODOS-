@@ -24,6 +24,8 @@ data class PlayerUi(
     val pos: Long = 0,
     val dur: Long = 0,
     val speed: Float = 1f,
+    val shuffle: Boolean = false,
+    val sleepMinutesLeft: Int = 0,
 )
 
 class MainVm(app: Application) : AndroidViewModel(app) {
@@ -34,10 +36,12 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val volumes = MutableStateFlow(Library.volumes(app))
     val selected = MutableStateFlow(Library.selected(app))
     val category = MutableStateFlow(Library.category(app))
+    val lightTheme = MutableStateFlow(Library.lightTheme(app))
     val player = MutableStateFlow(PlayerUi())
     val ui: StateFlow<PlayerUi> = player
 
     private var controller: MediaController? = null
+    private var sleepUntilMs: Long = 0L
 
     init {
         refresh()
@@ -57,10 +61,15 @@ class MainVm(app: Application) : AndroidViewModel(app) {
                     sync()
                 }
             })
-            while (true) { // atualiza barra de progresso e guarda posição
+            while (true) { // atualiza barra de progresso, sleep timer e guarda posição
                 sync()
                 val ep = player.value.episode
                 if (ep != null && player.value.playing) Library.savePos(ctx, ep.id, player.value.pos)
+                if (sleepUntilMs > 0L && System.currentTimeMillis() >= sleepUntilMs) {
+                    sleepUntilMs = 0L
+                    controller?.pause()
+                    sync()
+                }
                 delay(500)
             }
         }
@@ -68,12 +77,21 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     private fun sync() {
         val c = controller ?: return
+        val remMins = if (sleepUntilMs > 0L) ((sleepUntilMs - System.currentTimeMillis() + 59_999) / 60_000).toInt().coerceAtLeast(0) else 0
         player.value = player.value.copy(
             playing = c.isPlaying,
             pos = c.currentPosition,
             dur = c.duration.coerceAtLeast(0),
             speed = c.playbackParameters.speed,
+            shuffle = c.shuffleModeEnabled,
+            sleepMinutesLeft = remMins,
         )
+    }
+
+    fun toggleTheme() {
+        val next = !lightTheme.value
+        Library.setLightTheme(ctx, next)
+        lightTheme.value = next
     }
 
     fun refresh() {
@@ -154,6 +172,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     }
 
     fun togglePlay() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun prevTrack() { controller?.seekToPreviousMediaItem(); sync() }
+    fun nextTrack() { controller?.seekToNextMediaItem(); sync() }
+    fun toggleShuffle() { controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }; sync() }
     fun seekTo(ms: Long) { controller?.seekTo(ms); sync() }
     fun skip(ms: Long) { controller?.let { it.seekTo((it.currentPosition + ms).coerceAtLeast(0)) }; sync() }
     fun cycleSpeed() {
@@ -161,6 +182,19 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         val cur = controller?.playbackParameters?.speed ?: 1f
         val next = steps[(steps.indexOfFirst { it == cur } + 1).mod(steps.size)]
         controller?.setPlaybackSpeed(next); sync()
+    }
+    fun cycleSleepTimer() {
+        val steps = listOf(0, 15, 30, 45, 60)
+        val cur = player.value.sleepMinutesLeft
+        val next = when {
+            cur <= 0 -> 15
+            cur <= 15 -> 30
+            cur <= 30 -> 45
+            cur <= 45 -> 60
+            else -> 0
+        }
+        sleepUntilMs = if (next > 0) System.currentTimeMillis() + next * 60_000L else 0L
+        sync()
     }
 
     fun delete(ep: Episode) {

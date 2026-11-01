@@ -84,7 +84,8 @@ class DownloadService : Service() {
             val beforeIds = Library.scan(this).map { it.id }.toSet()
             runCatching {
                 if (DownloadManager.initError.value != null) error("yt-dlp não iniciou: ${DownloadManager.initError.value}")
-                val req = YoutubeDLRequest(job.url).apply {
+                val targetUrl = if (job.url.startsWith("http://") || job.url.startsWith("https://")) job.url else "ytsearch1:${job.url}"
+                val req = YoutubeDLRequest(targetUrl).apply {
                     addOption("-f", "bestaudio[ext=m4a]/bestaudio")
                     addOption("--write-thumbnail")
                     addOption("--convert-thumbnails", "jpg")

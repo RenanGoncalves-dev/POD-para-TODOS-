@@ -39,8 +39,10 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 
 private val Red = Color(0xFFFF4D4D)
-private val Bg = Color(0xFF0F0F12)
-private val Card = Color(0xFF1A1A20)
+private val DarkBg = Color(0xFF0F0F12)
+private val DarkCard = Color(0xFF1A1A20)
+private val LightBg = Color(0xFFF4F5F8)
+private val LightCard = Color(0xFFFFFFFF)
 
 class MainActivity : ComponentActivity() {
     private val vm: MainVm by viewModels()
@@ -49,9 +51,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleShare(intent)
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(primary = Red, background = Bg, surface = Card, onPrimary = Color.White)
-            ) { Screen(vm) }
+            val isLight by vm.lightTheme.collectAsState()
+            val scheme = if (isLight) {
+                lightColorScheme(primary = Red, background = LightBg, surface = LightCard, onPrimary = Color.White)
+            } else {
+                darkColorScheme(primary = Red, background = DarkBg, surface = DarkCard, onPrimary = Color.White)
+            }
+            MaterialTheme(colorScheme = scheme) { Screen(vm, isLight) }
         }
     }
 
@@ -88,8 +94,12 @@ private fun freeSpace(v: Volume) = runCatching { StatFs(v.dir.absolutePath).avai
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun Screen(vm: MainVm) {
+fun Screen(vm: MainVm, isLight: Boolean) {
     val ctx = LocalContext.current
+    val bgColor = if (isLight) LightBg else DarkBg
+    val cardColor = if (isLight) LightCard else DarkCard
+    val activeCardColor = if (isLight) Color(0xFFFFE5E5) else Color(0xFF2A1A1E)
+
     val episodes by vm.episodes.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val selectedPlId by vm.selectedPlaylistId.collectAsState()
@@ -101,10 +111,13 @@ fun Screen(vm: MainVm) {
     val volumes by vm.volumes.collectAsState()
     val category by vm.category.collectAsState()
 
+    var searchQuery by remember { mutableStateOf("") }
     val catPlaylists = playlists.filter { it.category == category }
     val activePlaylist = catPlaylists.firstOrNull { it.id == selectedPlId }
     val shown = episodes.filter { ep ->
-        ep.category == category && (activePlaylist == null || ep.id in activePlaylist.items)
+        ep.category == category &&
+            (activePlaylist == null || ep.id in activePlaylist.items) &&
+            (searchQuery.isBlank() || ep.title.contains(searchQuery, ignoreCase = true))
     }
 
     var moving by remember { mutableStateOf<Episode?>(null) }
@@ -120,21 +133,24 @@ fun Screen(vm: MainVm) {
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33) notif.launch(Manifest.permission.POST_NOTIFICATIONS) }
 
     Scaffold(
-        containerColor = Bg,
+        containerColor = bgColor,
         topBar = {
             TopAppBar(
                 title = { Text("POD", fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = bgColor),
                 actions = {
+                    IconButton(onClick = { vm.toggleTheme() }) {
+                        Icon(if (isLight) Icons.Default.DarkMode else Icons.Default.LightMode, "Tema")
+                    }
                     TextButton(onClick = { showStorage = true }) {
                         Icon(if (selected.removable) Icons.Default.SdCard else Icons.Default.PhoneAndroid, null, tint = Red)
                         Spacer(Modifier.width(6.dp))
-                        Text(if (selected.removable) "Cartão" else "Celular", color = Color.White)
+                        Text(if (selected.removable) "Cartão" else "Celular")
                     }
                 },
             )
         },
-        bottomBar = { if (p.episode != null) PlayerBar(p, vm) },
+        bottomBar = { if (p.episode != null) PlayerBar(p, vm, isLight) },
     ) { pad ->
         LazyColumn(
             Modifier.padding(pad).fillMaxSize(),
@@ -182,11 +198,11 @@ fun Screen(vm: MainVm) {
             }
 
             item {
-                Column(Modifier.clip(RoundedCornerShape(20.dp)).background(Card).padding(14.dp)) {
+                Column(Modifier.clip(RoundedCornerShape(20.dp)).background(cardColor).padding(14.dp)) {
                     OutlinedTextField(
                         value = url, onValueChange = { url = it }, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Link do vídeo, playlist ou canal") },
+                        placeholder = { Text("Link do YouTube ou digite o nome p/ buscar") },
                         shape = RoundedCornerShape(14.dp),
                         trailingIcon = {
                             IconButton(onClick = {
@@ -222,7 +238,7 @@ fun Screen(vm: MainVm) {
                     }
                 }
                 items(jobs.reversed(), key = { it.id }) { j ->
-                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Card).padding(12.dp)) {
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(cardColor).padding(12.dp)) {
                         Text(j.url, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
                         Spacer(Modifier.height(6.dp))
                         when (j.status) {
@@ -236,6 +252,22 @@ fun Screen(vm: MainVm) {
                         )
                     }
                 }
+            }
+
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("🔍 Filtrar na biblioteca…") },
+                    shape = RoundedCornerShape(14.dp),
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Clear, "Limpar") }
+                        }
+                    },
+                )
             }
 
             item {
@@ -261,7 +293,7 @@ fun Screen(vm: MainVm) {
                 val msg = if (activePlaylist != null) {
                     "A playlist \"${activePlaylist.name}\" está vazia. Toque no ícone de playlist em qualquer áudio ou baixe um link direto nela."
                 } else {
-                    "Nada em ${category.label} ainda. Cole um link acima ou compartilhe um vídeo do YouTube com este app."
+                    "Nada em ${category.label} ainda. Cole um link ou digite o nome acima para baixar."
                 }
                 Text(msg, color = Color.Gray)
             }
@@ -271,7 +303,7 @@ fun Screen(vm: MainVm) {
                 val epPls = catPlaylists.filter { ep.id in it.items }
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                        .background(if (active) Color(0xFF2A1A1E) else Card)
+                        .background(if (active) activeCardColor else cardColor)
                         .clickable { vm.play(ep, shown) }.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -281,8 +313,9 @@ fun Screen(vm: MainVm) {
                     )
                     Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                         Text(ep.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        val resumeText = if (ep.savedPosMs > 10_000L) " · ⏱ ${fmtTime(ep.savedPosMs)}" else ""
                         val plText = if (epPls.isNotEmpty()) " · 🎶 " + epPls.joinToString { it.name } else ""
-                        Text("${fmtSize(ep.size)} · ${ep.volume}$plText", color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${fmtSize(ep.size)} · ${ep.volume}$resumeText$plText", color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Icon(
                         if (active && p.playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
@@ -362,8 +395,8 @@ fun Screen(vm: MainVm) {
                     ) {
                         RadioButton(selected = v.dir == selected.dir, onClick = { vm.select(v) })
                         Column {
-                            Text(v.label)
-                            Text("${fmtSize(freeSpace(v))} livres", fontSize = 12.sp, color = Color.Gray)
+                            Text(v.label, fontWeight = FontWeight.SemiBold)
+                            Text("${fmtSize(freeSpace(v))} livres · ${v.dir.absolutePath}", fontSize = 11.sp, color = Color.Gray)
                         }
                     }
                 }
@@ -403,24 +436,37 @@ fun Screen(vm: MainVm) {
 }
 
 @Composable
-fun PlayerBar(p: PlayerUi, vm: MainVm) {
+fun PlayerBar(p: PlayerUi, vm: MainVm, isLight: Boolean) {
+    val barBg = if (isLight) Color(0xFFFFFFFF) else Color(0xFF202028)
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)).background(Color(0xFF202028))
-            .navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)).background(barBg)
+            .navigationBarsPadding().padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
-        Text(p.episode?.title ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(p.episode?.title ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = { vm.cycleSleepTimer() }) {
+                Text(if (p.sleepMinutesLeft > 0) "⏲️ ${p.sleepMinutesLeft}m" else "⏲️ Off", fontSize = 12.sp, color = if (p.sleepMinutesLeft > 0) Red else Color.Gray)
+            }
+            TextButton(onClick = { vm.cycleSpeed() }) {
+                Text("${p.speed}x", color = Red, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
         Slider(
             value = if (p.dur > 0) p.pos.toFloat() / p.dur else 0f,
             onValueChange = { vm.seekTo((it * p.dur).toLong()) },
         )
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("${fmtTime(p.pos)} / ${fmtTime(p.dur)}", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.weight(1f))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("${fmtTime(p.pos)} / ${fmtTime(p.dur)}", fontSize = 11.sp, color = Color.Gray)
+            IconButton(onClick = { vm.prevTrack() }) { Icon(Icons.Default.SkipPrevious, "Anterior") }
             IconButton(onClick = { vm.skip(-15_000) }) { Icon(Icons.Default.Replay10, "-15s") }
-            FilledIconButton(onClick = { vm.togglePlay() }, modifier = Modifier.size(52.dp)) {
-                Icon(if (p.playing) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(30.dp))
+            FilledIconButton(onClick = { vm.togglePlay() }, modifier = Modifier.size(48.dp)) {
+                Icon(if (p.playing) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(28.dp))
             }
             IconButton(onClick = { vm.skip(30_000) }) { Icon(Icons.Default.Forward30, "+30s") }
-            TextButton(onClick = { vm.cycleSpeed() }) { Text("${p.speed}x", color = Red, fontWeight = FontWeight.Bold) }
+            IconButton(onClick = { vm.nextTrack() }) { Icon(Icons.Default.SkipNext, "Próximo") }
+            IconButton(onClick = { vm.toggleShuffle() }) {
+                Icon(Icons.Default.Shuffle, "Aleatório", tint = if (p.shuffle) Red else Color.Gray)
+            }
         }
     }
 }
