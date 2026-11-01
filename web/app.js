@@ -1,11 +1,16 @@
 const $ = (s) => document.querySelector(s);
 const CACHE = "pod-audio-v1";
 const META = "pod-meta"; // localStorage: lista de episódios (p/ funcionar sem servidor)
+const PL_META = "pod-playlists"; // localStorage: playlists offline
 let eps = JSON.parse(localStorage.getItem(META) || "[]");
+let playlists = JSON.parse(localStorage.getItem(PL_META) || "[]");
 let offline = new Set();
 
 const CATS = [["podcasts", "🎙 Podcasts"], ["musicas", "🎵 Músicas"], ["djsets", "🎛 DJ Sets"]];
 let cat = localStorage.getItem("pod-cat") || "podcasts";
+let curPl = null; // id da playlist selecionada (ou null para "Todas")
+let queue = []; // fila de reprodução atual (para tocar playlist em sequência)
+
 // mesma normalização que o navegador usa na chave do cache
 const pathOf = (file) => new URL("/audio/" + file, location.href).pathname;
 
@@ -19,8 +24,10 @@ async function refreshOffline() {
 
 async function load() {
   try {
-    const r = await fetch("/api/episodes");
+    const [r, pr] = await Promise.all([fetch("/api/episodes"), fetch("/api/playlists")]);
     const server = await r.json();
+    playlists = await pr.json();
+    localStorage.setItem(PL_META, JSON.stringify(playlists));
     // mantém os salvos offline mesmo se apagados no servidor
     const byId = Object.fromEntries(eps.map((e) => [e.id, e]));
     server.forEach((e) => (byId[e.id] = e));
@@ -28,36 +35,61 @@ async function load() {
     localStorage.setItem(META, JSON.stringify(eps));
     $("#net").textContent = "";
   } catch {
-    $("#net").textContent = "Sem conexão com o servidor — mostrando só o salvo no celular";
+    $("#net").textContent = "Sem conexão com o servidor — mostrando o que está salvo no aparelho";
   }
   await refreshOffline();
   render();
+}
+
+function getVisibleEpisodes() {
+  const activePl = playlists.find((p) => p.id === curPl && p.category === cat);
+  let list = eps.filter((e) => (e.category || "podcasts") === cat && (navigator.onLine || (e.file && offline.has(pathOf(e.file)))));
+  if (activePl) {
+    const set = new Set(activePl.items);
+    list = list.filter((e) => set.has(e.id));
+  }
+  return list;
 }
 
 function render() {
   const list = $("#list");
   list.innerHTML = "";
   renderTabs();
-  const visible = eps.filter((e) => (e.category || "podcasts") === cat && (navigator.onLine || offline.has(pathOf(e.file))));
-  if (!visible.length) list.innerHTML = '<div class="empty">Nada aqui ainda.<br>Cole um link acima: ele será salvo em <b>' + CATS.find((c) => c[0] === cat)[1] + '</b>.</div>';
+  renderPlaylistsBar();
+  const visible = getVisibleEpisodes();
+  if (!visible.length) {
+    const activePl = playlists.find((p) => p.id === curPl && p.category === cat);
+    list.innerHTML = activePl
+      ? `<div class="empty">A playlist <b>${activePl.name}</b> está vazia.<br>Toque no botão <b>➕</b> de qualquer faixa ou cole um link acima para baixar direto nela.</div>`
+      : `<div class="empty">Nada aqui ainda.<br>Cole um link acima: o áudio e a capa serão salvos em <b>${CATS.find((c) => c[0] === cat)[1]}</b>.</div>`;
+  }
   for (const e of visible) {
-    const path = pathOf(e.file);
-    const saved = offline.has(path);
+    const path = e.file ? pathOf(e.file) : "";
+    const saved = path && offline.has(path);
+    const epPls = playlists.filter((p) => p.items.includes(e.id));
     const d = document.createElement("div");
-    d.className = "ep";
+    d.className = "ep" + (cur && cur.id === e.id ? " on" : "");
     d.innerHTML = `<img src="${e.thumb || ""}" loading="lazy" alt="">
       <div class="i"><div class="t"></div><div class="s">${e.channel || ""} · ${fmt(e.duration)} · ${
-      e.status === "done" ? mb(e.size) : e.status + (e.error ? " ⚠" : "")}</div></div><div class="a"></div>`;
+      e.status === "done" ? mb(e.size) : e.status + (e.error ? " ⚠" : "")}</div><div class="badges"></div></div><div class="a"></div>`;
     d.querySelector(".t").textContent = e.title;
+    const badges = d.querySelector(".badges");
+    epPls.forEach((p) => {
+      const sp = document.createElement("span");
+      sp.className = "badge";
+      sp.textContent = "🎶 " + p.name;
+      badges.append(sp);
+    });
     const a = d.querySelector(".a");
     if (e.status === "done" || saved) {
       const row = document.createElement("div");
       row.className = "row";
-      row.append(btn("▶", "ic play", () => play(e, path)));
+      row.append(btn("▶", "ic play", () => play(e, path, visible)));
+      row.append(btn("➕", "ic", () => openPlaylistModal(e)));
       if (navigator.onLine) row.append(btn("📂", "ic", () => move(e)));
       if (navigator.onLine) row.append(btn("🗑", "ic", () => del(e)));
       a.append(row);
-      a.append(saved ? btn("✓ offline", "ok", () => unsave(path)) : btn("⬇ celular", "", () => save(e, path, a)));
+      a.append(saved ? btn("✓ offline", "ok", () => unsave(e, path)) : btn("⬇ celular", "", () => save(e, path, a)));
     } else if (navigator.onLine) a.append(btn("🗑", "ic", () => del(e)));
     list.append(d);
   }
@@ -70,22 +102,136 @@ function renderTabs() {
     const n = eps.filter((e) => (e.category || "podcasts") === id).length;
     const b = btn(`${label} (${n})`, id === cat ? "tab on" : "tab", () => {
       cat = id;
+      curPl = null;
       localStorage.setItem("pod-cat", id);
       render();
     });
     t.append(b);
   }
-  $("#dest").textContent = CATS.find((c) => c[0] === cat)[1];
+  const activePl = playlists.find((p) => p.id === curPl && p.category === cat);
+  $("#dest").textContent = CATS.find((c) => c[0] === cat)[1] + (activePl ? ` → ${activePl.name}` : "");
 }
 
-async function move(e) {
-  const opts = CATS.map((c, i) => `${i + 1} = ${c[1]}`).join("\n");
-  const n = parseInt(prompt("Mover para qual categoria?\n" + opts, ""), 10);
-  if (!CATS[n - 1]) return;
-  await fetch("/api/episodes/" + encodeURIComponent(e.id) + "/category", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: CATS[n - 1][0] }) });
-  const oldPath = pathOf(e.file);
-  await unsave(oldPath);
+function renderPlaylistsBar() {
+  const bar = $("#plbar");
+  const head = $("#plhead");
+  bar.innerHTML = "";
+  const catPls = playlists.filter((p) => p.category === cat);
+  if (! catPls.some((p) => p.id === curPl)) curPl = null;
+
+  bar.append(btn("Todas", curPl === null ? "plchip on" : "plchip", () => { curPl = null; render(); }));
+  for (const p of catPls) {
+    bar.append(btn(`🎶 ${p.name} (${p.items.length})`, curPl === p.id ? "plchip on" : "plchip", () => { curPl = p.id; render(); }));
+  }
+  bar.append(btn("+ Nova playlist", "plchip add", () => createPlaylistPrompt()));
+
+  const activePl = catPls.find((p) => p.id === curPl);
+  if (activePl) {
+    head.hidden = false;
+    head.innerHTML = `<div><b>🎶 ${activePl.name}</b> <span class="s">(${activePl.items.length} itens)</span></div><div style="display:flex;gap:6px"></div>`;
+    const actions = head.lastChild;
+    const vis = getVisibleEpisodes().filter((e) => e.status === "done" || (e.file && offline.has(pathOf(e.file))));
+    if (vis.length) actions.append(btn("▶ Tocar tudo", "play", () => play(vis[0], pathOf(vis[0].file), vis)));
+    if (navigator.onLine) actions.append(btn("🗑 Excluir playlist", "", () => deletePlaylist(activePl)));
+  } else {
+    head.hidden = true;
+  }
+}
+
+function closeModal() { $("#modal").hidden = true; }
+$("#modal").onclick = (ev) => { if (ev.target.id === "modal") closeModal(); };
+
+function createPlaylistPrompt(afterCreate) {
+  const box = $("#mcard");
+  box.innerHTML = `<h3>Nova playlist em ${CATS.find((c) => c[0] === cat)[1]}</h3>
+    <input id="plname" placeholder="Nome da playlist (ex: Treino, Favoritas)">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+      <button id="mcancel">Cancelar</button>
+      <button id="mok" class="play">Criar</button>
+    </div>`;
+  $("#modal").hidden = false;
+  $("#plname").focus();
+  $("#mcancel").onclick = closeModal;
+  $("#mok").onclick = async () => {
+    const name = $("#plname").value.trim();
+    if (!name) return;
+    closeModal();
+    if (navigator.onLine) {
+      const r = await fetch("/api/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, category: cat }) });
+      const created = await r.json();
+      curPl = created.id;
+      if (afterCreate) await afterCreate(created.id);
+      await load();
+    } else {
+      const id = Date.now();
+      playlists.push({ id, name, category: cat, items: [] });
+      localStorage.setItem(PL_META, JSON.stringify(playlists));
+      curPl = id;
+      if (afterCreate) await afterCreate(id);
+      render();
+    }
+  };
+}
+
+async function deletePlaylist(pl) {
+  if (!confirm(`Excluir a playlist "${pl.name}"? (Os áudios continuam salvos)`)) return;
+  await fetch("/api/playlists/" + pl.id, { method: "DELETE" });
+  curPl = null;
   load();
+}
+
+function openPlaylistModal(e) {
+  const box = $("#mcard");
+  const catPls = playlists.filter((p) => p.category === (e.category || "podcasts"));
+  box.innerHTML = `<h3>Playlists</h3><div class="s" style="margin-bottom:6px">${e.title}</div><div id="plopts" style="display:flex;flex-direction:column;gap:6px"></div>`;
+  const opts = $("#plopts");
+  for (const p of catPls) {
+    const has = p.items.includes(e.id);
+    opts.append(
+      btn((has ? "✓ Na playlist: " : "+ Adicionar em: ") + p.name, has ? "ok" : "", async () => {
+        if (navigator.onLine) {
+          if (has) await fetch(`/api/playlists/${p.id}/items/${encodeURIComponent(e.id)}`, { method: "DELETE" });
+          else await fetch(`/api/playlists/${p.id}/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episode_id: e.id }) });
+          closeModal();
+          load();
+        } else {
+          p.items = has ? p.items.filter((x) => x !== e.id) : [...p.items, e.id];
+          localStorage.setItem(PL_META, JSON.stringify(playlists));
+          closeModal();
+          render();
+        }
+      })
+    );
+  }
+  opts.append(
+    btn("+ Criar nova playlist com este áudio", "play", () => {
+      createPlaylistPrompt(async (pid) => {
+        if (navigator.onLine) {
+          await fetch(`/api/playlists/${pid}/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episode_id: e.id }) });
+        }
+      });
+    })
+  );
+  opts.append(btn("Fechar", "", closeModal));
+  $("#modal").hidden = false;
+}
+
+function move(e) {
+  const box = $("#mcard");
+  box.innerHTML = `<h3>Mover categoria</h3><div class="s" style="margin-bottom:6px">${e.title}</div>`;
+  for (const [id, label] of CATS) {
+    if (id === (e.category || "podcasts")) continue;
+    box.append(
+      btn(`Mover para ${label}`, "", async () => {
+        closeModal();
+        await fetch("/api/episodes/" + encodeURIComponent(e.id) + "/category", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: id }) });
+        if (e.file) await unsave(e, pathOf(e.file));
+        load();
+      })
+    );
+  }
+  box.append(btn("Cancelar", "", closeModal));
+  $("#modal").hidden = false;
 }
 
 function btn(t, c, f) {
@@ -99,26 +245,32 @@ function btn(t, c, f) {
 async function save(e, path, a) {
   a.textContent = "baixando…";
   const c = await caches.open(CACHE);
-  await c.add(path); // guarda o arquivo no armazenamento do navegador
+  await c.add(path); // guarda o áudio no armazenamento offline do aparelho
+  if (e.thumb && e.thumb.startsWith("/audio/")) {
+    try { await c.add(e.thumb); } catch {} // guarda também a thumbnail offline!
+  }
   if (navigator.storage?.persist) navigator.storage.persist();
   await refreshOffline();
   render();
 }
-async function unsave(path) {
-  await (await caches.open(CACHE)).delete(path);
+async function unsave(e, path) {
+  const c = await caches.open(CACHE);
+  await c.delete(path);
+  if (e?.thumb && e.thumb.startsWith("/audio/")) await c.delete(e.thumb);
   await refreshOffline();
   render();
 }
 async function del(e) {
   if (!confirm("Apagar do servidor?")) return;
-  await fetch("/api/episodes/" + e.id, { method: "DELETE" });
+  await fetch("/api/episodes/" + encodeURIComponent(e.id), { method: "DELETE" });
   eps = eps.filter((x) => x.id !== e.id);
-  if (e.file) await unsave(pathOf(e.file));
+  if (e.file) await unsave(e, pathOf(e.file));
   load();
 }
 
-function play(e, path) {
+function play(e, path, list = null) {
   cur = e;
+  if (list) queue = list.filter((x) => x.status === "done" || (x.file && offline.has(pathOf(x.file))));
   const au = $("#au");
   $("#player").hidden = false;
   $("#pt").textContent = e.title;
@@ -126,7 +278,16 @@ function play(e, path) {
   const key = "pos:" + e.id;
   au.onloadedmetadata = () => (au.currentTime = +localStorage.getItem(key) || 0);
   au.ontimeupdate = () => localStorage.setItem(key, au.currentTime);
+  au.onended = () => {
+    localStorage.removeItem(key);
+    const idx = queue.findIndex((x) => x.id === e.id);
+    if (idx >= 0 && idx + 1 < queue.length) {
+      const next = queue[idx + 1];
+      play(next, pathOf(next.file), queue);
+    }
+  };
   au.play();
+  render();
   if ("mediaSession" in navigator)
     navigator.mediaSession.metadata = new MediaMetadata({ title: e.title, artist: e.channel || "", artwork: e.thumb ? [{ src: e.thumb }] : [] });
 }
@@ -140,7 +301,11 @@ document.querySelectorAll("[data-r]").forEach(
 );
 $("#f").onsubmit = async (ev) => {
   ev.preventDefault();
-  await fetch("/api/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("#u").value, category: cat }) });
+  await fetch("/api/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: $("#u").value, category: cat, playlist_id: curPl }),
+  });
   $("#u").value = "";
   load();
 };
@@ -179,7 +344,7 @@ $("#file").onchange = async (ev) => {
     const path = pathOf(f.name);
     await c.put(path, new Response(f, { headers: { "Content-Type": f.type || "audio/mp4" } }));
     if (!eps.some((e) => e.id === id))
-      eps.push({ id, title: f.name.replace(/\s*\[[\w-]{11}\]/, "").replace(/\.\w+$/, ""), file: f.name, size: f.size, status: "done", thumb: m ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : "" });
+      eps.push({ id, title: f.name.replace(/\s*\[[\w-]{11}\]/, "").replace(/\.\w+$/, ""), file: f.name, size: f.size, status: "done", category: cat, thumb: m ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : "" });
   }
   localStorage.setItem(META, JSON.stringify(eps));
   ev.target.value = "";
@@ -214,4 +379,3 @@ addEventListener("offline", load);
 setInterval(() => navigator.onLine && eps.some((e) => ["queued", "downloading"].includes(e.status)) && load(), 4000);
 load();
 loadStorage();
-
