@@ -1,4 +1,4 @@
-name: Build & Release (Android + Linux + Windows)
+name: Build & Release (Android APK + Linux AppImage + Windows EXE)
 
 on:
   workflow_dispatch:
@@ -14,12 +14,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: POD-Linux
-            bin: dist-desktop/POD
-            out: dist-desktop/POD-Linux
+            artifact: POD-Linux-x86_64.AppImage
+            out: dist-desktop/POD-Linux-x86_64.AppImage
           - os: windows-latest
             artifact: POD-Windows.exe
-            bin: dist-desktop/POD.exe
             out: dist-desktop/POD-Windows.exe
     runs-on: ${{ matrix.os }}
     steps:
@@ -29,8 +27,6 @@ jobs:
           python-version: "3.12"
       - run: pip install -r desktop/requirements.txt
       - run: python desktop/build.py
-      - run: mv "${{ matrix.bin }}" "${{ matrix.out }}"
-        shell: bash
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

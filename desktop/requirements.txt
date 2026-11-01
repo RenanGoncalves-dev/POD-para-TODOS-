@@ -1,4 +1,3 @@
 -r ../server/requirements.txt
+PyQt6
 pyinstaller
-pywebview; sys_platform == "win32"
-
