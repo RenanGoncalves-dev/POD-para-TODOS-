@@ -272,6 +272,11 @@ class PlaylistItemReq(BaseModel):
     episode_id: str
 
 
+class PlaylistMergeReq(BaseModel):
+    source_id: int
+    delete_source: bool = False
+
+
 YDL_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio",
     "writethumbnail": True,
@@ -298,7 +303,7 @@ def find_or_fetch_thumb(audio_path: Path, vid: str | None = None, fallback_url: 
         cand = audio_path.with_suffix(".jpg")
         if cand.is_file():
             return "/audio/" + cand.relative_to(AUDIO).as_posix()
-    is_yt_id = bool(vid and len(vid) == 11 and re.match(r"^[\w-]{11}$", vid) and not vid.startswith("ext_"))
+    is_yt_id = bool(vid and len(vid) == 11 and re.match(r"^[\w-]{11}$", vid) and not vid.startswith(("ext_", "loc_", "sp_")))
     url = fallback_url or (f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg" if is_yt_id else None)
     if url and url.startswith("http"):
         dest = audio_path.with_suffix(".jpg")
@@ -372,6 +377,165 @@ def add_to_playlist_db(pid: int, eid: str):
     with _lock, db() as c:
         pos = c.execute("SELECT COALESCE(MAX(pos), 0) + 1 FROM playlist_items WHERE playlist_id=?", (pid,)).fetchone()[0]
         c.execute("INSERT OR IGNORE INTO playlist_items(playlist_id, episode_id, pos) VALUES(?,?,?)", (pid, eid, pos))
+
+
+def get_or_create_playlist_db(name: str, cat: str) -> int:
+    clean = name.strip() or "Playlist Spotify"
+    with _lock, db() as c:
+        row = c.execute("SELECT id FROM playlists WHERE lower(name)=lower(?) AND category=?", (clean, cat)).fetchone()
+        if row:
+            return int(row["id"])
+        cur = c.execute("INSERT INTO playlists(name, category) VALUES(?,?)", (clean, cat))
+        return int(cur.lastrowid)
+
+
+def parse_spotify_embed(raw_url: str) -> tuple[str | None, str | None, str | None, list[dict]]:
+    """Extrai (kind, collection_name, cover_url, tracks) de links do Spotify (playlist, album, track, episode) sem precisar de API key."""
+    url = raw_url.strip()
+    if any(h in url.lower() for h in ("spotify.link/", "spoti.fi/")):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                url = r.geturl()
+        except Exception:  # noqa: BLE001
+            pass
+
+    m = re.search(
+        r"(?:open\.spotify\.com/(?:intl-[a-zA-Z-]+/)?(?:embed/)?|spotify:)(playlist|album|track|artist|episode|show)[/:]([A-Za-z0-9]+)",
+        url,
+    )
+    if not m:
+        return None, None, None, []
+    kind, sp_id = m.group(1), m.group(2)
+    embed_url = f"https://open.spotify.com/embed/{kind}/{sp_id}"
+    collection_name: str | None = None
+    cover_url: str | None = None
+    tracks: list[dict] = []
+
+    try:
+        req = urllib.request.Request(embed_url, headers={"User-Agent": UA})
+        html = urllib.request.urlopen(req, timeout=20).read(4 * 1024 * 1024).decode("utf-8", errors="ignore")
+        m_json = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html, re.DOTALL)
+        if m_json:
+            data = json.loads(m_json.group(1))
+            entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+            collection_name = (entity.get("name") or entity.get("title") or "").replace("\u00a0", " ").strip() or None
+            sources = (
+                entity.get("coverArt", {}).get("sources")
+                or entity.get("visualIdentity", {}).get("image")
+                or []
+            )
+            if isinstance(sources, list) and sources:
+                cover_url = sources[0].get("url")
+
+            track_list = entity.get("trackList") or []
+            if track_list:
+                for t in track_list:
+                    t_title = (t.get("title") or "").replace("\u00a0", " ").strip()
+                    t_artist = (t.get("subtitle") or "").replace("\u00a0", " ").strip()
+                    t_dur = int((t.get("duration") or 0) // 1000)
+                    if t_title:
+                        tracks.append({"title": t_title, "artist": t_artist, "duration": t_dur, "thumb": cover_url})
+            elif collection_name:
+                t_artist = (entity.get("subtitle") or "").replace("\u00a0", " ").strip()
+                if not t_artist and isinstance(entity.get("artists"), list):
+                    t_artist = ", ".join(
+                        a.get("name", "") for a in entity["artists"] if isinstance(a, dict) and a.get("name")
+                    )
+                t_dur = int((entity.get("duration") or 0) // 1000)
+                tracks.append({"title": collection_name, "artist": t_artist, "duration": t_dur, "thumb": cover_url})
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Fallback oEmbed caso o HTML do embed não traga __NEXT_DATA__
+    if not tracks:
+        try:
+            oembed_url = f"https://open.spotify.com/oembed?url=https://open.spotify.com/{kind}/{sp_id}"
+            req = urllib.request.Request(oembed_url, headers={"User-Agent": UA})
+            odata = json.loads(urllib.request.urlopen(req, timeout=15).read().decode("utf-8", errors="ignore"))
+            otitle = (odata.get("title") or "").strip()
+            othumb = odata.get("thumbnail_url")
+            if otitle:
+                collection_name = collection_name or otitle
+                cover_url = cover_url or othumb
+                tracks.append({"title": otitle, "artist": "Spotify", "duration": 0, "thumb": cover_url})
+        except Exception:  # noqa: BLE001
+            pass
+
+    return kind, collection_name, cover_url, tracks
+
+
+def try_spotify_url(raw_url: str, cat: str, playlist_id: int | None = None) -> bool:
+    """Se for link do Spotify (playlist, álbum ou faixa), extrai as músicas, cria/usa playlist e baixa cada faixa."""
+    if not any(h in raw_url.lower() for h in ("open.spotify.com/", "spotify.link/", "spoti.fi/", "spotify:")):
+        return False
+    kind, collection_name, cover_url, tracks = parse_spotify_embed(raw_url)
+    if not kind:
+        return False
+    if not tracks:
+        raise ValueError("Não foi possível ler as faixas desta playlist/link do Spotify (verifique se a playlist é pública).")
+
+    # Se o usuário NÃO selecionou uma playlist específica (onde já pode ter músicas do YouTube),
+    # e colou uma playlist/álbum do Spotify, cria ou reutiliza uma playlist com o nome da playlist do Spotify.
+    target_pl_id = playlist_id
+    if target_pl_id is None and kind in ("playlist", "album", "artist") and collection_name:
+        target_pl_id = get_or_create_playlist_db(f"🟢 {collection_name}", cat)
+
+    queued: list[tuple[str, str, dict]] = []
+    for t in tracks:
+        display_title = f"{t['artist']} - {t['title']}" if t.get("artist") else t["title"]
+        vid = "sp_" + short_id(display_title)[:8]  # 11 chars: compatível com ID_RE [id]
+        queued.append((vid, display_title, t))
+        upsert(
+            id=vid,
+            title=display_title,
+            channel=t.get("artist") or collection_name or "Spotify",
+            duration=int(t.get("duration") or 0),
+            thumb=t.get("thumb") or cover_url,
+            status="queued",
+            category=cat,
+        )
+        if target_pl_id:
+            add_to_playlist_db(target_pl_id, vid)
+
+    for vid, display_title, t in queued:
+        upsert(id=vid, status="downloading")
+        try:
+            (AUDIO / cat).mkdir(parents=True, exist_ok=True)
+            safe_stem = f"{safe_filename(display_title, 90)} [{vid}]"
+            opts = {
+                **YDL_OPTS,
+                "outtmpl": str(AUDIO / cat / f"{safe_stem}.%(ext)s"),
+                "noplaylist": True,
+            }
+            search_q = f"ytsearch1:{display_title} audio"
+            with yt_dlp.YoutubeDL(opts) as y:
+                info = y.extract_info(search_q, download=True)
+                entries = info.get("entries") if info else None
+                d = (entries[0] if entries else info) or {}
+                path = Path(y.prepare_filename(d)) if d else None
+                if not path or not path.is_file():
+                    # Procura pelo prefixo [vid] na pasta
+                    matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
+                    path = matches[0] if matches else None
+            if not path or not path.is_file():
+                raise RuntimeError(f"Áudio não encontrado para: {display_title}")
+            meta = extract_embedded_metadata(path)
+            thumb_local = find_or_fetch_thumb(path, vid, t.get("thumb") or cover_url or d.get("thumbnail"))
+            upsert(
+                id=vid,
+                title=display_title,
+                channel=t.get("artist") or d.get("channel") or d.get("uploader") or meta.get("channel") or "Spotify",
+                duration=int(d.get("duration") or t.get("duration") or meta.get("duration") or 0),
+                thumb=thumb_local,
+                file=path.relative_to(AUDIO).as_posix(),
+                size=path.stat().st_size,
+                status="done",
+                error=None,
+            )
+        except Exception as ex:  # noqa: BLE001
+            upsert(id=vid, status="error", error=str(ex)[:300])
+    return True
 
 
 def human_title_from_url(url: str) -> tuple[str, str, str]:
@@ -569,7 +733,17 @@ def import_local_audio_file(src_path: Path, cat: str = "podcasts", playlist_id: 
 
 def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
     raw_url = raw_url.strip()
-    # 1) Verifica primeiro se é um link de download direto de podcast (ex: Jovem Nerd ?file=...mp3) ou Feed RSS
+    # 0) Verifica se é um link do Spotify (playlist, álbum ou música)
+    if raw_url.startswith(("http://", "https://", "spotify:")):
+        try:
+            if try_spotify_url(raw_url, cat, playlist_id):
+                return
+        except Exception as e:  # noqa: BLE001
+            eid = "sp_" + short_id(raw_url)[:8]
+            upsert(id=eid, title=raw_url, status="error", error=str(e)[:300], category=cat)
+            return
+
+    # 1) Verifica se é um link de download direto de podcast (ex: Jovem Nerd ?file=...mp3) ou Feed RSS
     if raw_url.startswith(("http://", "https://")):
         try:
             if try_external_podcast_or_audio(raw_url, cat, playlist_id):
@@ -596,6 +770,9 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
             return
         upsert(id=raw_url, title=raw_url, status="error", error=locals().get("last_err", "Não foi possível extrair áudio deste link")[:300], category=cat)
         return
+
+    if playlist_id is None and entries is not None and len(items) > 1 and info and info.get("title"):
+        playlist_id = get_or_create_playlist_db(f"▶️ {info['title']}", cat)
 
     ids = []
     for e in items:
@@ -758,6 +935,23 @@ def playlists_remove_item(pid: int, eid: str):
     with _lock, db() as c:
         c.execute("DELETE FROM playlist_items WHERE playlist_id=? AND episode_id=?", (pid, eid))
     return {"ok": True}
+
+
+@app.post("/api/playlists/{target_id}/merge")
+def playlists_merge(target_id: int, req: PlaylistMergeReq):
+    """Junta todas as faixas da playlist source_id dentro da playlist target_id (ex: juntar Spotify + YouTube)."""
+    if target_id == req.source_id:
+        raise HTTPException(400, "Escolha playlists diferentes para juntar")
+    with _lock, db() as c:
+        rows = c.execute(
+            "SELECT episode_id FROM playlist_items WHERE playlist_id=? ORDER BY pos ASC, rowid ASC",
+            (req.source_id,),
+        ).fetchall()
+    for r in rows:
+        add_to_playlist_db(target_id, r["episode_id"])
+    if req.delete_source:
+        playlists_delete(req.source_id)
+    return {"ok": True, "added": len(rows)}
 
 
 # ---------- Armazenamento (PC Linux/Windows e Cartão SD) ----------
