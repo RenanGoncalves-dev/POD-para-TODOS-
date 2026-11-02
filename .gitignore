@@ -10,3 +10,4 @@ android/.gradle/
 dist-desktop/
 build-desktop/
 .venv-desktop/
+.vscode/

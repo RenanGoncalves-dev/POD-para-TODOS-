@@ -37,7 +37,7 @@ data class Playlist(
 
 /** Armazenamento: celular e cartão SD. Tudo que já estiver nas pastas é reconhecido automaticamente. */
 object Library {
-    val AUDIO = setOf("m4a", "mp3", "opus", "ogg", "webm", "aac", "wav", "flac")
+    val AUDIO = setOf("m4a", "mp3", "opus", "ogg", "webm", "aac", "wav", "flac", "mp4")
     private val THUMBS = listOf("jpg", "jpeg", "webp", "png")
     private val ID_RE = Regex("""\[([\w-]{11})]$""")
     private val UNSAFE_RE = Regex("""[<>:"/\\|?*\x00-\x1f]+""")

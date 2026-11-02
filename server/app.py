@@ -29,7 +29,7 @@ CONFIG = DATA / "config.json"
 # empacotado (PyInstaller) os arquivos web ficam dentro de _MEIPASS
 WEB = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else ROOT.parent) / "web"
 DATA.mkdir(parents=True, exist_ok=True)
-AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac"}
+AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"}
 THUMB_EXTS = (".jpg", ".jpeg", ".webp", ".png")
 ID_RE = re.compile(r"\[([\w-]{11})\]$")
 SAFE_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -277,8 +277,20 @@ class PlaylistMergeReq(BaseModel):
     delete_source: bool = False
 
 
+def get_default_postprocessors() -> list[dict]:
+    """Se o FFmpeg estiver disponível no sistema, extrai o áudio como .m4a puro garantindo compatibilidade total."""
+    if shutil.which("ffmpeg"):
+        return [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "m4a",
+            "preferredquality": "192",
+            "nopostoverwrites": False,
+        }]
+    return []
+
+
 YDL_OPTS = {
-    "format": "bestaudio[ext=m4a]/bestaudio",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "writethumbnail": True,
     "quiet": True,
     "noprogress": True,
@@ -291,7 +303,7 @@ YDL_OPTS = {
     "js_runtimes": js_runtimes(),
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "ios", "mweb", "web"],
+            "player_client": ["android", "ios", "mweb", "web", "tv_samsung", "visionos"],
         }
     },
     "http_headers": {
@@ -312,6 +324,9 @@ def find_cookie_file() -> Path | None:
 def get_ydl_opts(extra_opts: dict | None = None) -> dict:
     """Retorna opções do yt-dlp configuradas com proteção anti-bot e cookies (se existirem)."""
     opts = dict(YDL_OPTS)
+    pps = get_default_postprocessors()
+    if pps:
+        opts["postprocessors"] = list(pps)
     cookie_file = find_cookie_file()
     if cookie_file:
         opts["cookiefile"] = str(cookie_file)
@@ -541,6 +556,12 @@ def try_spotify_url(raw_url: str, cat: str, playlist_id: int | None = None) -> b
                 entries = info.get("entries") if info else None
                 d = (entries[0] if entries else info) or {}
                 path = Path(y.prepare_filename(d)) if d else None
+                if path and not path.is_file():
+                    for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"):
+                        cand = path.with_suffix(ext)
+                        if cand.is_file():
+                            path = cand
+                            break
                 if not path or not path.is_file():
                     # Procura pelo prefixo [vid] na pasta
                     matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
@@ -829,6 +850,18 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
             with yt_dlp.YoutubeDL(opts) as y:
                 d = y.extract_info(target, download=True)
                 path = Path(y.prepare_filename(d))
+            if not path.is_file():
+                for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"):
+                    cand = path.with_suffix(ext)
+                    if cand.is_file():
+                        path = cand
+                        break
+            if not path.is_file():
+                matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
+                if matches:
+                    path = matches[0]
+            if not path or not path.is_file():
+                raise RuntimeError(f"Áudio não encontrado para ID: {vid}")
             meta = extract_embedded_metadata(path)
             thumb_local = find_or_fetch_thumb(path, vid, d.get("thumbnail"))
             upsert(

@@ -215,7 +215,9 @@ class DownloadService : Service() {
                 it.copy(progress = baseProgress, text = "Spotify (${idx + 1}/${sp.tracks.size}): $displayTitle")
             }
             val req = YoutubeDLRequest("ytsearch1:$displayTitle audio").apply {
-                addOption("-f", "bestaudio[ext=m4a]/bestaudio")
+                addOption("-f", "bestaudio[ext=m4a]/bestaudio/best")
+                addOption("-x")
+                addOption("--audio-format", "m4a")
                 addOption("--write-thumbnail")
                 addOption("--convert-thumbnails", "jpg")
                 addOption("-o", "${catDir.absolutePath}/$safeStem.%(ext)s")
@@ -224,7 +226,7 @@ class DownloadService : Service() {
                 addOption("--no-overwrites")
                 addOption("--no-mtime")
                 addOption("--ignore-errors")
-                addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web")
+                addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web,tv_samsung,visionos")
                 Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
             }
             runCatching {
@@ -311,7 +313,9 @@ class DownloadService : Service() {
                     if (DownloadManager.initError.value != null) error("yt-dlp não iniciou: ${DownloadManager.initError.value}")
                     val targetUrl = if (unwrapped.startsWith("http://") || unwrapped.startsWith("https://")) unwrapped else "ytsearch1:$unwrapped"
                     val req = YoutubeDLRequest(targetUrl).apply {
-                        addOption("-f", "bestaudio[ext=m4a]/bestaudio")
+                        addOption("-f", "bestaudio[ext=m4a]/bestaudio/best")
+                        addOption("-x")
+                        addOption("--audio-format", "m4a")
                         addOption("--write-thumbnail")
                         addOption("--convert-thumbnails", "jpg")
                         addOption("-o", "${catDir.absolutePath}/%(title).100s [%(id)s].%(ext)s")
@@ -320,7 +324,7 @@ class DownloadService : Service() {
                         addOption("--no-overwrites")
                         addOption("--no-mtime")
                         addOption("--ignore-errors")
-                        addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web")
+                        addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web,tv_samsung,visionos")
                         Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
                     }
                     YoutubeDL.getInstance().execute(req, "dl-${job.id}") { p, _, line ->
