@@ -114,6 +114,7 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     val selected by vm.selected.collectAsState()
     val volumes by vm.volumes.collectAsState()
     val category by vm.category.collectAsState()
+    val transferStatus by vm.transferStatus.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     val catPlaylists = playlists.filter { it.category == category }
@@ -128,6 +129,7 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     var playlistTarget by remember { mutableStateOf<Episode?>(null) }
     var creatingPlaylistWithEp by remember { mutableStateOf<Episode?>(null) }
     var showNewPlaylistDialog by remember { mutableStateOf(false) }
+    var showMergePlaylistsDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var showStorage by remember { mutableStateOf(false) }
@@ -201,15 +203,27 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                         onClick = { creatingPlaylistWithEp = null; newPlaylistName = ""; showNewPlaylistDialog = true },
                         label = { Text("+ Nova playlist", fontSize = 12.sp, color = Red) },
                     )
+                    if (catPlaylists.size >= 2) {
+                        AssistChip(
+                            onClick = { showMergePlaylistsDialog = true },
+                            label = { Text("🔀 Juntar playlists", fontSize = 12.sp) },
+                        )
+                    }
                 }
             }
 
             item {
+                val internalVol = volumes.firstOrNull { !it.removable }
+                val sdVol = volumes.firstOrNull { it.removable }
+                val internalEpsCount = if (internalVol != null) {
+                    episodes.count { it.file.absolutePath.startsWith(internalVol.dir.absolutePath) }
+                } else 0
+
                 Column(Modifier.clip(RoundedCornerShape(20.dp)).background(cardColor).padding(14.dp)) {
                     OutlinedTextField(
                         value = url, onValueChange = { url = it }, singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Link (YouTube, Jovem Nerd, .mp3) ou nome") },
+                        placeholder = { Text("Link (YouTube, Spotify, Jovem Nerd, .mp3) ou nome") },
                         shape = RoundedCornerShape(14.dp),
                         trailingIcon = {
                             IconButton(onClick = {
@@ -234,6 +248,23 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                         Icon(Icons.Default.FolderOpen, null, tint = Red)
                         Spacer(Modifier.width(8.dp))
                         Text("Importar arquivo (.mp3/.m4a) do celular", fontSize = 13.sp)
+                    }
+                    if (sdVol != null && internalVol != null && internalEpsCount > 0) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { vm.transferAllBetweenVolumes(internalVol, sdVol, onlyCategory = null) },
+                            enabled = transferStatus == null,
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Icon(Icons.Default.SdCard, null, tint = Red)
+                            Spacer(Modifier.width(8.dp))
+                            Text("📲➡️💾 Passar da Memória p/ Cartão SD ($internalEpsCount)", fontSize = 13.sp)
+                        }
+                    }
+                    if (transferStatus != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(transferStatus!!, color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(
                         when {
@@ -398,40 +429,163 @@ fun Screen(vm: MainVm, isLight: Boolean) {
         )
     }
 
-    if (showStorage) AlertDialog(
-        onDismissRequest = { showStorage = false },
-        confirmButton = { TextButton(onClick = { showStorage = false }) { Text("OK") } },
-        title = { Text("Onde salvar") },
-        text = {
-            Column {
-                volumes.forEach { v ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { vm.select(v) }.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = v.dir == selected.dir, onClick = { vm.select(v) })
-                        Column {
-                            Text(v.label, fontWeight = FontWeight.SemiBold)
-                            Text("${fmtSize(freeSpace(v))} livres · ${v.dir.absolutePath}", fontSize = 11.sp, color = Color.Gray)
+    if (showMergePlaylistsDialog && catPlaylists.size >= 2) {
+        var srcPl by remember { mutableStateOf(catPlaylists.first()) }
+        var dstPl by remember { mutableStateOf(activePlaylist ?: catPlaylists.last()) }
+        var deleteSrc by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showMergePlaylistsDialog = false },
+            title = { Text("🔀 Juntar Playlists (Spotify + YouTube)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Copiar faixas da playlist:", fontSize = 12.sp, color = Color.Gray)
+                    catPlaylists.forEach { pl ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { srcPl = pl },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = srcPl.id == pl.id, onClick = { srcPl = pl })
+                            Text("${pl.name} (${pl.items.size})", fontSize = 13.sp)
                         }
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Para dentro da playlist de destino:", fontSize = 12.sp, color = Color.Gray)
+                    catPlaylists.forEach { pl ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { dstPl = pl },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = dstPl.id == pl.id, onClick = { dstPl = pl })
+                            Text("${pl.name} (${pl.items.size})", fontSize = 13.sp)
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().clickable { deleteSrc = !deleteSrc },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = deleteSrc, onCheckedChange = { deleteSrc = it })
+                        Text("Excluir playlist de origem após juntar", fontSize = 12.sp)
+                    }
                 }
-                if (volumes.size == 1) Text("Cartão de memória não detectado. Insira o cartão e volte para esta tela.", fontSize = 12.sp, color = Color.Gray)
-                Spacer(Modifier.height(8.dp))
-                Text("Os áudios, capas (thumbnails) e playlists que já estiverem nas pastas do celular ou do cartão aparecem sozinhos na biblioteca.", fontSize = 12.sp, color = Color.Gray)
-            }
-        },
-    )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = srcPl.id != dstPl.id,
+                    onClick = {
+                        vm.mergePlaylists(srcPl.id, dstPl.id, deleteSrc)
+                        showMergePlaylistsDialog = false
+                    },
+                ) { Text("Juntar", color = Red) }
+            },
+            dismissButton = { TextButton(onClick = { showMergePlaylistsDialog = false }) { Text("Cancelar") } },
+        )
+    }
+
+    if (showStorage) {
+        val internalVol = volumes.firstOrNull { !it.removable }
+        val sdVol = volumes.firstOrNull { it.removable }
+        val internalEps = if (internalVol != null) episodes.filter { it.file.absolutePath.startsWith(internalVol.dir.absolutePath) } else emptyList()
+        val internalPods = internalEps.filter { it.category == Category.PODCASTS }
+        val sdEps = if (sdVol != null) episodes.filter { it.file.absolutePath.startsWith(sdVol.dir.absolutePath) } else emptyList()
+
+        AlertDialog(
+            onDismissRequest = { showStorage = false },
+            confirmButton = { TextButton(onClick = { showStorage = false }) { Text("OK") } },
+            title = { Text("Armazenamento e Cartão SD") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    volumes.forEach { v ->
+                        val vEps = episodes.filter { it.file.absolutePath.startsWith(v.dir.absolutePath) }
+                        val vBytes = vEps.sumOf { it.size }
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.select(v) }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = v.dir == selected.dir, onClick = { vm.select(v) })
+                            Column {
+                                Text(v.label, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${vEps.size} áudios (${fmtSize(vBytes)}) · ${fmtSize(freeSpace(v))} livres",
+                                    fontSize = 11.sp,
+                                    color = Color.Gray,
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    Text("🔄 Transferir arquivos entre memórias", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+
+                    if (transferStatus != null) {
+                        Text(transferStatus!!, color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    if (internalVol != null && sdVol != null) {
+                        Button(
+                            onClick = { vm.transferAllBetweenVolumes(internalVol, sdVol, onlyCategory = Category.PODCASTS) },
+                            enabled = internalPods.isNotEmpty() && transferStatus == null,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("📲➡️💾 Passar Podcasts p/ SD (${internalPods.size})", fontSize = 13.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { vm.transferAllBetweenVolumes(internalVol, sdVol, onlyCategory = null) },
+                            enabled = internalEps.isNotEmpty() && transferStatus == null,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("📲➡️💾 Passar TUDO p/ Cartão SD (${internalEps.size})", fontSize = 13.sp)
+                        }
+                        if (sdEps.isNotEmpty()) {
+                            TextButton(
+                                onClick = { vm.transferAllBetweenVolumes(sdVol, internalVol, onlyCategory = null) },
+                                enabled = transferStatus == null,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("💾➡️📲 Passar do Cartão SD p/ Celular (${sdEps.size})", fontSize = 12.sp)
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Cartão SD não detectado no momento. Insira o cartão de memória no celular para liberar os botões de transferir seus podcasts da memória interna para o SD.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                        )
+                    }
+                }
+            },
+        )
+    }
 
     moving?.let { ep ->
         AlertDialog(
             onDismissRequest = { moving = null },
-            title = { Text("Mover para") },
+            title = { Text("Mover ou Transferir") },
             text = {
                 Column {
+                    Text("Mudar de categoria:", fontSize = 12.sp, color = Color.Gray)
                     Category.values().forEach { c ->
                         TextButton(onClick = { vm.move(ep, c); moving = null }, enabled = c != ep.category) {
-                            Text("${catIcon(c)}  ${c.label}", fontSize = 16.sp)
+                            Text("${catIcon(c)}  ${c.label}", fontSize = 15.sp)
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    Text("Transferir entre Memória e Cartão SD:", fontSize = 12.sp, color = Color.Gray)
+                    val otherVols = volumes.filterNot { ep.file.absolutePath.startsWith(it.dir.absolutePath) }
+                    if (otherVols.isEmpty()) {
+                        Text(
+                            "Salvo em: ${ep.volume} (insira um cartão SD para transferir)",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    } else {
+                        otherVols.forEach { targetVol ->
+                            TextButton(
+                                onClick = { vm.transferEpisodeToVolume(ep, targetVol); moving = null },
+                            ) {
+                                val icon = if (targetVol.removable) "💾" else "📲"
+                                Text("$icon  Transferir para ${targetVol.label}", fontSize = 15.sp, color = Red)
+                            }
                         }
                     }
                 }

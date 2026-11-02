@@ -45,8 +45,8 @@ object Library {
     fun safeFileName(name: String, maxLen: Int = 100): String =
         UNSAFE_RE.replace(name, " ").replace(Regex("""\s+"""), " ").trim().trim('.').take(maxLen).ifBlank { "episodio" }
 
-    fun shortHash(input: String): String =
-        MessageDigest.getInstance("SHA-1").digest(input.toByteArray()).joinToString("") { "%02x".format(it) }.take(7)
+    fun shortHash(input: String, len: Int = 7): String =
+        MessageDigest.getInstance("SHA-1").digest(input.toByteArray()).joinToString("") { "%02x".format(it) }.take(len)
 
     fun volumes(ctx: Context): List<Volume> =
         ctx.getExternalFilesDirs(null).filterNotNull().mapIndexed { i, f ->
@@ -97,7 +97,7 @@ object Library {
         extractEmbeddedMetadata(audioFile)
         companionThumbs(audioFile).firstOrNull()?.let { return it.toURI().toString() }
 
-        val isRealYt = ytId != null && !ytId.startsWith("ext_") && !ytId.startsWith("loc_")
+        val isRealYt = ytId != null && !ytId.startsWith("ext_") && !ytId.startsWith("loc_") && !ytId.startsWith("sp_")
         if (isRealYt) {
             val parent = audioFile.parentFile
             val target = File(parent, "${audioFile.nameWithoutExtension}.jpg")
@@ -172,12 +172,73 @@ object Library {
         return ep.file == dst || ep.file.renameTo(dst)
     }
 
+    /** Transfere um episódio (áudio + capa) entre Memória do celular e Cartão SD de forma segura (copia + verifica tamanho + remove origem). */
+    fun transferToVolume(ctx: Context, ep: Episode, targetVol: Volume): Boolean {
+        if (ep.file.absolutePath.startsWith(targetVol.dir.absolutePath)) return true
+        if (!ep.file.isFile) return false
+        val dstDir = catDir(targetVol, ep.category)
+        val dstAudio = File(dstDir, ep.file.name)
+        val tmpAudio = File(dstDir, ".trans_${ep.file.name}")
+        return try {
+            val oldThumbs = companionThumbs(ep.file)
+            oldThumbs.forEach { t ->
+                val dstThumb = File(dstDir, t.name)
+                if (t.absolutePath != dstThumb.absolutePath) {
+                    t.copyTo(dstThumb, overwrite = true)
+                }
+            }
+            val origLen = ep.file.length()
+            ep.file.copyTo(tmpAudio, overwrite = true)
+            if (!tmpAudio.isFile || tmpAudio.length() != origLen) {
+                tmpAudio.delete()
+                return false
+            }
+            if (dstAudio.exists()) dstAudio.delete()
+            if (!tmpAudio.renameTo(dstAudio)) {
+                tmpAudio.copyTo(dstAudio, overwrite = true)
+                tmpAudio.delete()
+            }
+            if (dstAudio.isFile && dstAudio.length() == origLen) {
+                oldThumbs.forEach { it.delete() }
+                ep.file.delete()
+                savePlaylists(ctx, playlists(ctx)) // sincroniza playlists.json nos volumes
+                true
+            } else {
+                false
+            }
+        } catch (_: Throwable) {
+            tmpAudio.delete()
+            false
+        }
+    }
+
+    /** Transfere em lote os áudios (todos ou apenas de uma categoria como Podcasts) de um volume para outro. */
+    fun transferAllBetweenVolumes(
+        ctx: Context,
+        fromVol: Volume,
+        toVol: Volume,
+        onlyCategory: Category? = null,
+        onProgress: (done: Int, total: Int, title: String) -> Unit = { _, _, _ -> },
+    ): Int {
+        if (fromVol.dir.absolutePath == toVol.dir.absolutePath) return 0
+        val targets = scan(ctx).filter { ep ->
+            ep.file.absolutePath.startsWith(fromVol.dir.absolutePath) &&
+                (onlyCategory == null || ep.category == onlyCategory)
+        }
+        var moved = 0
+        targets.forEachIndexed { idx, ep ->
+            onProgress(idx + 1, targets.size, ep.title)
+            if (transferToVolume(ctx, ep, toVol)) moved++
+        }
+        return moved
+    }
+
     fun deleteFileAndThumbs(ep: Episode) {
         companionThumbs(ep.file).forEach { it.delete() }
         ep.file.delete()
     }
 
-    // ---- Playlists (salvas em playlists.json no volume selecionado + prefs) ----
+    // ---- Playlists (salvas em playlists.json em todos os volumes + prefs) ----
     private fun plFile(ctx: Context) = File(selected(ctx).dir, "playlists.json")
 
     fun playlists(ctx: Context): List<Playlist> {
@@ -212,7 +273,41 @@ object Library {
         }
         val str = arr.toString()
         prefs(ctx).edit().putString("playlists", str).apply()
-        runCatching { plFile(ctx).writeText(str) }
+        volumes(ctx).forEach { v -> runCatching { File(v.dir, "playlists.json").writeText(str) } }
+    }
+
+    fun getOrCreatePlaylist(ctx: Context, name: String, category: Category): String {
+        val clean = name.trim().ifBlank { "Playlist Spotify" }
+        val current = playlists(ctx)
+        current.firstOrNull { it.category == category && it.name.equals(clean, ignoreCase = true) }?.let { return it.id }
+        val created = Playlist(
+            id = System.currentTimeMillis().toString(),
+            name = clean,
+            category = category,
+            items = emptyList(),
+        )
+        savePlaylists(ctx, current + created)
+        return created.id
+    }
+
+    fun addItemsToPlaylist(ctx: Context, playlistId: String, episodeIds: List<String>) {
+        if (episodeIds.isEmpty()) return
+        val next = playlists(ctx).map { pl ->
+            if (pl.id == playlistId) pl.copy(items = (pl.items + episodeIds).distinct()) else pl
+        }
+        savePlaylists(ctx, next)
+    }
+
+    fun mergePlaylists(ctx: Context, sourceId: String, targetId: String, deleteSource: Boolean = false) {
+        if (sourceId == targetId) return
+        val current = playlists(ctx)
+        val src = current.firstOrNull { it.id == sourceId } ?: return
+        val merged = current.map { pl ->
+            if (pl.id == targetId) pl.copy(items = (pl.items + src.items).distinct()) else pl
+        }.let { list ->
+            if (deleteSource) list.filterNot { it.id == sourceId } else list
+        }
+        savePlaylists(ctx, merged)
     }
 
     fun category(ctx: Context) = runCatching { Category.valueOf(prefs(ctx).getString("cat", "")!!) }.getOrDefault(Category.PODCASTS)

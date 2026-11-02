@@ -37,6 +37,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val selected = MutableStateFlow(Library.selected(app))
     val category = MutableStateFlow(Library.category(app))
     val lightTheme = MutableStateFlow(Library.lightTheme(app))
+    val transferStatus = MutableStateFlow<String?>(null)
     val player = MutableStateFlow(PlayerUi())
     val ui: StateFlow<PlayerUi> = player
 
@@ -159,9 +160,44 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         playlists.value = next
     }
 
+    fun mergePlaylists(sourceId: String, targetId: String, deleteSource: Boolean = false) {
+        if (sourceId == targetId) return
+        Library.mergePlaylists(ctx, sourceId, targetId, deleteSource)
+        selectedPlaylistId.value = targetId
+        refresh()
+    }
+
     fun move(ep: Episode, to: Category) {
         if (player.value.episode?.id == ep.id) { controller?.stop(); controller?.clearMediaItems(); player.value = PlayerUi() }
         Library.move(ctx, ep, to); refresh()
+    }
+
+    fun transferEpisodeToVolume(ep: Episode, targetVol: Volume) {
+        if (player.value.episode?.id == ep.id) { controller?.stop(); controller?.clearMediaItems(); player.value = PlayerUi() }
+        viewModelScope.launch {
+            transferStatus.value = "Transferindo \"${ep.title.take(35)}\" para ${targetVol.label}…"
+            val ok = withContext(Dispatchers.IO) { Library.transferToVolume(ctx, ep, targetVol) }
+            refresh()
+            transferStatus.value = if (ok) "✓ Transferido para ${targetVol.label}!" else "⚠ Falha ao transferir (verifique espaço livre)"
+            delay(2500)
+            transferStatus.value = null
+        }
+    }
+
+    fun transferAllBetweenVolumes(fromVol: Volume, toVol: Volume, onlyCategory: Category? = null) {
+        if (player.value.episode != null) { controller?.stop(); controller?.clearMediaItems(); player.value = PlayerUi() }
+        viewModelScope.launch {
+            val moved = withContext(Dispatchers.IO) {
+                Library.transferAllBetweenVolumes(ctx, fromVol, toVol, onlyCategory) { done, total, title ->
+                    transferStatus.value = "Transferindo ($done/$total): ${title.take(32)}…"
+                }
+            }
+            if (toVol.removable) Library.select(ctx, toVol)
+            refresh()
+            transferStatus.value = "✓ $moved arquivo(s) transferido(s) para ${toVol.label}!"
+            delay(3000)
+            transferStatus.value = null
+        }
     }
 
     private fun toMediaItem(ep: Episode) = MediaItem.Builder()
