@@ -318,4 +318,36 @@ object Library {
 
     fun savedPos(ctx: Context, id: String) = prefs(ctx).getLong("pos:$id", 0L)
     fun savePos(ctx: Context, id: String, ms: Long) = prefs(ctx).edit().putLong("pos:$id", ms).apply()
+
+    // ---- Anti-Bot & Cookies do YouTube ----
+    fun cookieFile(ctx: Context): File? {
+        val selectedDir = selected(ctx).dir
+        val cand = File(selectedDir, "cookies.txt")
+        if (cand.isFile && cand.length() > 0) return cand
+        for (v in volumes(ctx)) {
+            val f = File(v.dir, "cookies.txt")
+            if (f.isFile && f.length() > 0) return f
+        }
+        return null
+    }
+
+    fun hasCookies(ctx: Context): Boolean = cookieFile(ctx) != null
+
+    fun saveCookies(ctx: Context, text: String): Boolean = runCatching {
+        val f = File(selected(ctx).dir, "cookies.txt")
+        f.writeText(text)
+        true
+    }.getOrDefault(false)
+
+    fun deleteCookies(ctx: Context): Boolean = runCatching {
+        var any = false
+        for (v in volumes(ctx)) {
+            val f = File(v.dir, "cookies.txt")
+            if (f.isFile) {
+                f.delete()
+                any = true
+            }
+        }
+        any
+    }.getOrDefault(false)
 }

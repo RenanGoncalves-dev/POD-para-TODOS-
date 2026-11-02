@@ -38,6 +38,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val category = MutableStateFlow(Library.category(app))
     val lightTheme = MutableStateFlow(Library.lightTheme(app))
     val transferStatus = MutableStateFlow<String?>(null)
+    val hasCookies = MutableStateFlow(Library.hasCookies(app))
+    val ytDlpUpdating = MutableStateFlow(false)
+    val ytDlpUpdateStatus = MutableStateFlow<String?>(null)
     val player = MutableStateFlow(PlayerUi())
     val ui: StateFlow<PlayerUi> = player
 
@@ -102,6 +105,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             val (eps, pls) = withContext(Dispatchers.IO) { Library.scan(ctx) to Library.playlists(ctx) }
             episodes.value = eps
             playlists.value = pls
+            hasCookies.value = Library.hasCookies(ctx)
         }
     }
 
@@ -197,6 +201,49 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             transferStatus.value = "✓ $moved arquivo(s) transferido(s) para ${toVol.label}!"
             delay(3000)
             transferStatus.value = null
+        }
+    }
+
+    fun importCookies(uri: Uri) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { inp ->
+                        val text = inp.bufferedReader().readText()
+                        Library.saveCookies(ctx, text)
+                    }
+                }
+            }
+            hasCookies.value = Library.hasCookies(ctx)
+            refresh()
+        }
+    }
+
+    fun removeCookies() {
+        Library.deleteCookies(ctx)
+        hasCookies.value = false
+        refresh()
+    }
+
+    fun updateYtDlp() {
+        if (ytDlpUpdating.value) return
+        ytDlpUpdating.value = true
+        ytDlpUpdateStatus.value = "Atualizando motor do YouTube (yt-dlp)…"
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    com.yausername.youtubedl_android.YoutubeDL.getInstance().updateYoutubeDL(ctx, com.yausername.youtubedl_android.YoutubeDL.UpdateChannel.STABLE)
+                }
+            }
+            ytDlpUpdating.value = false
+            if (res.isSuccess) {
+                val st = res.getOrNull()
+                ytDlpUpdateStatus.value = "✓ Motor do YouTube atualizado ($st)!"
+            } else {
+                ytDlpUpdateStatus.value = "⚠ Falha ao atualizar: ${res.exceptionOrNull()?.message}"
+            }
+            delay(3500)
+            ytDlpUpdateStatus.value = null
         }
     }
 

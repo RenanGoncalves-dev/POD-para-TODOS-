@@ -224,6 +224,8 @@ class DownloadService : Service() {
                 addOption("--no-overwrites")
                 addOption("--no-mtime")
                 addOption("--ignore-errors")
+                addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web")
+                Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
             }
             runCatching {
                 YoutubeDL.getInstance().execute(req, "dl-${job.id}-$idx") { p, _, _ ->
@@ -318,6 +320,8 @@ class DownloadService : Service() {
                         addOption("--no-overwrites")
                         addOption("--no-mtime")
                         addOption("--ignore-errors")
+                        addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web")
+                        Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
                     }
                     YoutubeDL.getInstance().execute(req, "dl-${job.id}") { p, _, line ->
                         val txt = line.lineSequence().lastOrNull { it.isNotBlank() }?.take(80) ?: ""
@@ -336,7 +340,11 @@ class DownloadService : Service() {
                 }
                 DownloadManager.update(job.id) { it.copy(status = Status.DONE, progress = 1f, text = "Concluído (áudio + capa salvos)") }
             }.onFailure { e ->
-                DownloadManager.update(job.id) { it.copy(status = Status.ERROR, text = (e.message ?: "erro").lineSequence().lastOrNull { l -> l.isNotBlank() }?.take(160) ?: "erro") }
+                val raw = (e.message ?: "erro").lineSequence().lastOrNull { l -> l.isNotBlank() } ?: "erro"
+                val friendly = if (raw.contains("bot", ignoreCase = true) || raw.contains("Sign in to confirm", ignoreCase = true)) {
+                    "YouTube pediu confirmação anti-bot. Use 'Anti-Bot / Cookies' no menu de armazenamento para atualizar ou importar cookies."
+                } else raw.take(160)
+                DownloadManager.update(job.id) { it.copy(status = Status.ERROR, text = friendly) }
             }
             DownloadManager.version.update { it + 1 }
         }

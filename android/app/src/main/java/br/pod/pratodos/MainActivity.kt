@@ -115,6 +115,9 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     val volumes by vm.volumes.collectAsState()
     val category by vm.category.collectAsState()
     val transferStatus by vm.transferStatus.collectAsState()
+    val hasCookies by vm.hasCookies.collectAsState()
+    val ytDlpUpdating by vm.ytDlpUpdating.collectAsState()
+    val ytDlpUpdateStatus by vm.ytDlpUpdateStatus.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     val catPlaylists = playlists.filter { it.category == category }
@@ -130,6 +133,7 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     var creatingPlaylistWithEp by remember { mutableStateOf<Episode?>(null) }
     var showNewPlaylistDialog by remember { mutableStateOf(false) }
     var showMergePlaylistsDialog by remember { mutableStateOf(false) }
+    var showAntiBotDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var showStorage by remember { mutableStateOf(false) }
@@ -138,6 +142,9 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     val pickAudioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) vm.importUris(uris)
+    }
+    val pickCookieLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importCookies(uri)
     }
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33) notif.launch(Manifest.permission.POST_NOTIFICATIONS) }
 
@@ -148,6 +155,9 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                 title = { Text("POD", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = bgColor),
                 actions = {
+                    IconButton(onClick = { showAntiBotDialog = true }) {
+                        Text("🍪", fontSize = 18.sp)
+                    }
                     IconButton(onClick = { vm.toggleTheme() }) {
                         Icon(if (isLight) Icons.Default.DarkMode else Icons.Default.LightMode, "Tema")
                     }
@@ -297,6 +307,16 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                             (if (j.status == Status.ERROR) "⚠ " else if (j.status == Status.DONE) "✓ " else "") + j.text,
                             fontSize = 12.sp, color = if (j.status == Status.ERROR) Red else Color.Gray, maxLines = 2,
                         )
+                        if (j.status == Status.ERROR && (j.text.contains("bot", ignoreCase = true) || j.text.contains("confirm", ignoreCase = true))) {
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = { showAntiBotDialog = true },
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.height(28.dp),
+                            ) {
+                                Text("🍪 Toque aqui para resolver o anti-bot", color = Red, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -551,10 +571,72 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                             color = Color.Gray,
                         )
                     }
+
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showStorage = false; showAntiBotDialog = true }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("🍪 Anti-Bot & Cookies do YouTube", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(if (hasCookies) "✓ cookies.txt ativo" else "Usando clientes móveis (Android/iOS)", fontSize = 11.sp, color = Color.Gray)
+                        }
+                        TextButton(onClick = { showStorage = false; showAntiBotDialog = true }) {
+                            Text("Configurar", color = Red, fontSize = 12.sp)
+                        }
+                    }
                 }
             },
         )
     }
+
+    if (showAntiBotDialog) AlertDialog(
+        onDismissRequest = { showAntiBotDialog = false },
+        title = { Text("🍪 Anti-Bot do YouTube") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Se o YouTube bloquear downloads pedindo login para confirmar que você não é robô ('Sign in to confirm you're not a bot'), resolva com as opções abaixo:",
+                    fontSize = 13.sp,
+                    color = Color.Gray,
+                )
+                if (ytDlpUpdateStatus != null) {
+                    Text(ytDlpUpdateStatus!!, color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Button(
+                    onClick = { vm.updateYtDlp() },
+                    enabled = !ytDlpUpdating,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (ytDlpUpdating) "Atualizando…" else "🔄 1. Atualizar Motor yt-dlp", fontSize = 13.sp)
+                }
+                OutlinedButton(
+                    onClick = { pickCookieLauncher.launch(arrayOf("*/*")) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("📁 2. Importar cookies.txt", fontSize = 13.sp)
+                }
+                if (hasCookies) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("✓ cookies.txt ativo no app", color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        TextButton(onClick = { vm.removeCookies() }) { Text("Remover", color = Color.Gray, fontSize = 12.sp) }
+                    }
+                } else {
+                    Text(
+                        "Dica: No PC, use a extensão 'Get cookies.txt LOCALLY' no Chrome/Firefox logado no YouTube, salve o arquivo e envie para o celular.",
+                        fontSize = 11.sp,
+                        color = Color.Gray,
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { showAntiBotDialog = false }) { Text("Fechar") } },
+    )
 
     moving?.let { ep ->
         AlertDialog(
