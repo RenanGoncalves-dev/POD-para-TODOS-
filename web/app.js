@@ -157,6 +157,9 @@ function renderPlaylistsBar() {
     bar.append(btn(`🎶 ${p.name} (${p.items.length})`, curPl === p.id ? "plchip on" : "plchip", () => { curPl = p.id; render(); }));
   }
   bar.append(btn("+ Nova playlist", "plchip add", () => createPlaylistPrompt()));
+  if (catPls.length >= 2) {
+    bar.append(btn("🔀 Juntar playlists", "plchip", () => mergePlaylistsPrompt()));
+  }
 
   const activePl = catPls.find((p) => p.id === curPl);
   if (activePl) {
@@ -211,6 +214,58 @@ async function deletePlaylist(pl) {
   await fetch("/api/playlists/" + pl.id, { method: "DELETE" });
   curPl = null;
   load();
+}
+
+function mergePlaylistsPrompt() {
+  const catPls = playlists.filter((p) => p.category === cat);
+  if (catPls.length < 2) return;
+  const box = $("#mcard");
+  const optsHtml = catPls.map((p) => `<option value="${p.id}">🎶 ${p.name} (${p.items.length})</option>`).join("");
+  box.innerHTML = `<h3>🔀 Juntar Playlists (Spotify + YouTube)</h3>
+    <div class="s">Copiar todas as faixas da playlist:</div>
+    <select id="msrc">${optsHtml}</select>
+    <div class="s">Para dentro da playlist de destino:</div>
+    <select id="mdst">${optsHtml}</select>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:4px">
+      <input type="checkbox" id="mdel"> Excluir a playlist de origem após juntar
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+      <button id="mcancel">Cancelar</button>
+      <button id="mok" class="play">Juntar</button>
+    </div>`;
+  $("#modal").hidden = false;
+  if (curPl) $("#mdst").value = String(curPl);
+  if ($("#msrc").value === $("#mdst").value && catPls.length > 1) {
+    const other = catPls.find((p) => String(p.id) !== $("#mdst").value);
+    if (other) $("#msrc").value = String(other.id);
+  }
+  $("#mcancel").onclick = closeModal;
+  $("#mok").onclick = async () => {
+    const srcId = Number($("#msrc").value);
+    const dstId = Number($("#mdst").value);
+    const delSrc = $("#mdel").checked;
+    if (srcId === dstId) return alert("Escolha duas playlists diferentes!");
+    closeModal();
+    if (navigator.onLine) {
+      await fetch(`/api/playlists/${dstId}/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: srcId, delete_source: delSrc }),
+      });
+      curPl = dstId;
+      await load();
+    } else {
+      const src = playlists.find((p) => p.id === srcId);
+      const dst = playlists.find((p) => p.id === dstId);
+      if (src && dst) {
+        dst.items = [...new Set([...dst.items, ...src.items])];
+        if (delSrc) playlists = playlists.filter((p) => p.id !== srcId);
+        localStorage.setItem(PL_META, JSON.stringify(playlists));
+        curPl = dstId;
+        render();
+      }
+    }
+  };
 }
 
 function openPlaylistModal(e) {

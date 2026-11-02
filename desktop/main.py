@@ -345,7 +345,7 @@ class PodWindow(QMainWindow):
         dl_layout.setContentsMargins(14, 12, 14, 12)
         dl_layout.setSpacing(10)
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Cole link (YouTube, Jovem Nerd, .mp3, RSS…) ou digite o nome p/ buscar — ou arraste arquivos .mp3 aqui")
+        self.url_input.setPlaceholderText("Cole link (YouTube, Spotify, Jovem Nerd, .mp3, RSS…) ou digite o nome p/ buscar — ou arraste arquivos .mp3 aqui")
         self.url_input.returnPressed.connect(self.start_download)
         dl_layout.addWidget(self.url_input, 1)
         self.dl_btn = QPushButton("⬇ Baixar Áudio")
@@ -367,6 +367,11 @@ class PodWindow(QMainWindow):
         self.play_all_btn = QPushButton("▶ Tocar Tudo")
         self.play_all_btn.clicked.connect(self.play_all_visible)
         bar_h.addWidget(self.play_all_btn)
+
+        self.merge_pl_btn = QPushButton("🔀 Juntar Playlists")
+        self.merge_pl_btn.setToolTip("Juntar músicas de outra playlist (ex: Spotify + YouTube) nesta playlist")
+        self.merge_pl_btn.clicked.connect(self.merge_playlists_dialog)
+        bar_h.addWidget(self.merge_pl_btn)
 
         self.del_pl_btn = QPushButton("🗑 Excluir Playlist")
         self.del_pl_btn.clicked.connect(self.delete_current_playlist)
@@ -561,6 +566,7 @@ class PodWindow(QMainWindow):
         active_pl = next((p for p in cat_pls if p["id"] == self.current_pl_id), None)
         dest_name = CAT_LABELS[self.current_cat].split("  ")[-1] + (f" → {active_pl['name']}" if active_pl else "")
         self.dl_btn.setText(f"⬇ Baixar em {dest_name}")
+        self.merge_pl_btn.setVisible(len(cat_pls) >= 2)
         self.del_pl_btn.setVisible(active_pl is not None)
 
     def visible_episodes(self) -> list[dict]:
@@ -772,6 +778,57 @@ class PodWindow(QMainWindow):
             backend.playlists_delete(self.current_pl_id)
             self.current_pl_id = None
             self.reload_data()
+
+    def merge_playlists_dialog(self):
+        cat_pls = [p for p in self.playlists if p.get("category") == self.current_cat]
+        if len(cat_pls) < 2:
+            QMessageBox.information(self, "Juntar Playlists", "Crie pelo menos 2 playlists nesta categoria para poder juntá-las.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🔀 Juntar Playlists (ex: Spotify + YouTube)")
+        dlg.setMinimumWidth(380)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Copiar todas as faixas da playlist:"))
+        src_combo = QComboBox()
+        for p in cat_pls:
+            src_combo.addItem(f"🎶 {p['name']} ({len(p['items'])} faixas)", p["id"])
+        v.addWidget(src_combo)
+
+        v.addWidget(QLabel("Para dentro da playlist de destino:"))
+        dst_combo = QComboBox()
+        for idx, p in enumerate(cat_pls):
+            dst_combo.addItem(f"🎶 {p['name']} ({len(p['items'])} faixas)", p["id"])
+            if p["id"] == self.current_pl_id:
+                dst_combo.setCurrentIndex(idx)
+        if src_combo.currentIndex() == dst_combo.currentIndex() and len(cat_pls) > 1:
+            src_combo.setCurrentIndex((dst_combo.currentIndex() + 1) % len(cat_pls))
+        v.addWidget(dst_combo)
+
+        del_cb = QCheckBox("Excluir a playlist de origem após juntar")
+        v.addWidget(del_cb)
+
+        btns = QHBoxLayout()
+        b_ok = QPushButton("🔀 Juntar Agora")
+        b_ok.setObjectName("primary")
+        b_cancel = QPushButton("Cancelar")
+        btns.addWidget(b_ok)
+        btns.addWidget(b_cancel)
+        v.addLayout(btns)
+
+        def do_merge():
+            sid = src_combo.currentData()
+            did = dst_combo.currentData()
+            if sid == did:
+                QMessageBox.warning(dlg, "Aviso", "Escolha duas playlists diferentes.")
+                return
+            backend.playlists_merge(did, backend.PlaylistMergeReq(source_id=sid, delete_source=del_cb.isChecked()))
+            self.current_pl_id = did
+            dlg.accept()
+            self.reload_data()
+
+        b_ok.clicked.connect(do_merge)
+        b_cancel.clicked.connect(dlg.reject)
+        dlg.exec()
 
     def manage_episode_playlists(self, ep: dict):
         dlg = QDialog(self)
