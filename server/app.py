@@ -289,7 +289,35 @@ YDL_OPTS = {
     "trim_file_name": 120,
     "retries": 5,
     "js_runtimes": js_runtimes(),
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios", "mweb", "web"],
+        }
+    },
+    "http_headers": {
+        "User-Agent": UA,
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    },
 }
+
+
+def find_cookie_file() -> Path | None:
+    """Localiza arquivo cookies.txt nas pastas do projeto ou de áudio."""
+    for cand in (DATA / "cookies.txt", AUDIO / "cookies.txt", ROOT / "cookies.txt"):
+        if cand.is_file() and cand.stat().st_size > 0:
+            return cand
+    return None
+
+
+def get_ydl_opts(extra_opts: dict | None = None) -> dict:
+    """Retorna opções do yt-dlp configuradas com proteção anti-bot e cookies (se existirem)."""
+    opts = dict(YDL_OPTS)
+    cookie_file = find_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = str(cookie_file)
+    if extra_opts:
+        opts.update(extra_opts)
+    return opts
 
 
 def find_or_fetch_thumb(audio_path: Path, vid: str | None = None, fallback_url: str | None = None) -> str | None:
@@ -503,11 +531,10 @@ def try_spotify_url(raw_url: str, cat: str, playlist_id: int | None = None) -> b
         try:
             (AUDIO / cat).mkdir(parents=True, exist_ok=True)
             safe_stem = f"{safe_filename(display_title, 90)} [{vid}]"
-            opts = {
-                **YDL_OPTS,
+            opts = get_ydl_opts({
                 "outtmpl": str(AUDIO / cat / f"{safe_stem}.%(ext)s"),
                 "noplaylist": True,
-            }
+            })
             search_q = f"ytsearch1:{display_title} audio"
             with yt_dlp.YoutubeDL(opts) as y:
                 info = y.extract_info(search_q, download=True)
@@ -755,8 +782,9 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
 
     # 2) YouTube / SoundCloud / Bandcamp / Mixcloud / Busca por nome via yt-dlp
     url = unwrap_download_url(raw_url) if raw_url.startswith(("http://", "https://")) else f"ytsearch1:{raw_url}"
+    flat_opts = get_ydl_opts({"extract_flat": "in_playlist", "quiet": True, "ignoreerrors": True})
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist", "ignoreerrors": True, "js_runtimes": js_runtimes()}) as y:
+        with yt_dlp.YoutubeDL(flat_opts) as y:
             info = y.extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001
         info = None
@@ -768,7 +796,10 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
         # 3) Fallback: tenta achar link .mp3/.m4a dentro do HTML da página
         if raw_url.startswith(("http://", "https://")) and try_scrape_audio_from_webpage(raw_url, cat, playlist_id):
             return
-        upsert(id=raw_url, title=raw_url, status="error", error=locals().get("last_err", "Não foi possível extrair áudio deste link")[:300], category=cat)
+        err_msg = locals().get("last_err", "Não foi possível extrair áudio deste link")
+        if any(k in err_msg.lower() for k in ("bot", "sign in to confirm", "confirm you're not a bot")):
+            err_msg = "YouTube solicitou verificação anti-bot. Use '🍪 Cookies' nas configurações para autenticar."
+        upsert(id=raw_url, title=raw_url, status="error", error=err_msg[:300], category=cat)
         return
 
     if playlist_id is None and entries is not None and len(items) > 1 and info and info.get("title"):
@@ -794,7 +825,7 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
         try:
             (AUDIO / cat).mkdir(parents=True, exist_ok=True)
             target = item_url if item_url.startswith(("http://", "https://")) else f"https://www.youtube.com/watch?v={vid}"
-            opts = {**YDL_OPTS, "outtmpl": str(AUDIO / cat / "%(title).100s [%(id)s].%(ext)s")}
+            opts = get_ydl_opts({"outtmpl": str(AUDIO / cat / "%(title).100s [%(id)s].%(ext)s")})
             with yt_dlp.YoutubeDL(opts) as y:
                 d = y.extract_info(target, download=True)
                 path = Path(y.prepare_filename(d))
@@ -812,7 +843,10 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
                 error=None,
             )
         except Exception as ex:  # noqa: BLE001
-            upsert(id=vid, status="error", error=str(ex)[:300])
+            ex_str = str(ex)
+            if any(k in ex_str.lower() for k in ("bot", "sign in to confirm", "confirm you're not a bot")):
+                ex_str = "YouTube pediu confirmação anti-bot. Configure cookies ou aguarde alguns minutos."
+            upsert(id=vid, status="error", error=ex_str[:300])
 
 
 @app.post("/api/add")
@@ -1055,6 +1089,64 @@ def audio(name: str):
     if AUDIO.resolve() not in p.parents or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+# ---------- Anti-Bot & Cookies do YouTube ----------
+def extract_cookies_from_installed_browsers() -> tuple[bool, str]:
+    """Tenta extrair cookies do YouTube dos navegadores instalados no sistema."""
+    try:
+        import yt_dlp.cookies
+    except Exception as e:  # noqa: BLE001
+        return False, f"Módulo de cookies indisponível: {e}"
+
+    browsers = ["chrome", "firefox", "edge", "brave", "opera", "vivaldi", "chromium"]
+    out_cookie_file = DATA / "cookies.txt"
+    last_err = ""
+    for b in browsers:
+        try:
+            jar = yt_dlp.cookies.extract_cookies_from_browser(b)
+            if jar:
+                jar.save(str(out_cookie_file), ignore_discard=True, ignore_expires=True)
+                if out_cookie_file.is_file() and out_cookie_file.stat().st_size > 0:
+                    return True, f"Cookies do YouTube extraídos do {b.capitalize()} com sucesso!"
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            continue
+    return False, f"Nenhum navegador aberto ou cookies não encontrados ({last_err}). Se o navegador estiver aberto, tente fechá-lo ou importe cookies.txt manualmente."
+
+
+@app.get("/api/cookies")
+def cookies_info():
+    cfile = find_cookie_file()
+    return {
+        "has_cookies": cfile is not None,
+        "path": str(cfile) if cfile else None,
+        "size": cfile.stat().st_size if cfile else 0,
+    }
+
+
+@app.post("/api/cookies/browser")
+def cookies_from_browser_endpoint():
+    ok, msg = extract_cookies_from_installed_browsers()
+    return {"ok": ok, "msg": msg}
+
+
+@app.post("/api/cookies/upload")
+async def cookies_upload_endpoint(request: Request):
+    data = await request.body()
+    if not data or len(data.strip()) == 0:
+        raise HTTPException(400, "Arquivo de cookies vazio")
+    out = DATA / "cookies.txt"
+    out.write_bytes(data)
+    return {"ok": True, "size": len(data), "msg": "Arquivo cookies.txt importado com sucesso!"}
+
+
+@app.delete("/api/cookies")
+def cookies_delete_endpoint():
+    for cand in (DATA / "cookies.txt", AUDIO / "cookies.txt", ROOT / "cookies.txt"):
+        if cand.is_file():
+            cand.unlink(missing_ok=True)
+    return {"ok": True}
 
 
 scan_audio_dir()
