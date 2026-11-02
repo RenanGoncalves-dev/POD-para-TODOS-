@@ -451,8 +451,63 @@ async function loadStorage() {
     box.innerHTML = "";
     s.cards.forEach((p) => box.append(btn("💾 Cartão/Pendrive: " + p, "", () => setStorage(p, false))));
     if (s.current !== s.default) box.append(btn("↩ Voltar à pasta padrão", "", () => setStorage("", false)));
+    await loadCookies();
   } catch {}
 }
+
+async function loadCookies() {
+  try {
+    const c = await (await fetch("/api/cookies")).json();
+    const info = $("#ckInfo");
+    const delBtn = $("#btnCkDel");
+    if (c.has_cookies) {
+      info.textContent = `✓ Cookies ativos (${mb(c.size)}) — ${c.path}`;
+      info.style.color = "var(--red)";
+      if (delBtn) delBtn.style.display = "inline-block";
+    } else {
+      info.textContent = "Nenhum cookie configurado (usando cliente móvel anti-bot)";
+      info.style.color = "var(--mut)";
+      if (delBtn) delBtn.style.display = "none";
+    }
+  } catch {}
+}
+
+$("#btnCkBrowser").onclick = async () => {
+  const b = $("#btnCkBrowser");
+  b.disabled = true;
+  b.textContent = "Buscando cookies nos navegadores…";
+  try {
+    const res = await (await fetch("/api/cookies/browser", { method: "POST" })).json();
+    alert(res.msg);
+    loadCookies();
+  } catch (err) {
+    alert("Erro ao extrair cookies: " + err);
+  } finally {
+    b.disabled = false;
+    b.textContent = "🔄 Pegar cookies do navegador do PC";
+  }
+};
+
+$("#btnCkFile").onclick = () => $("#ckFileInput").click();
+$("#ckFileInput").onchange = async (ev) => {
+  const file = ev.target.files?.[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  const res = await fetch("/api/cookies/upload", { method: "POST", body: buf });
+  const j = await res.json();
+  if (res.ok) {
+    alert(j.msg || "Arquivo cookies.txt importado com sucesso!");
+    loadCookies();
+  } else {
+    alert(j.detail || "Erro ao enviar cookies");
+  }
+};
+
+$("#btnCkDel").onclick = async () => {
+  if (!confirm("Remover cookies salvos?")) return;
+  await fetch("/api/cookies", { method: "DELETE" });
+  loadCookies();
+};
 async function setStorage(path, exact) {
   const r = await fetch("/api/storage", {
     method: "POST",

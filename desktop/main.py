@@ -330,6 +330,12 @@ class PodWindow(QMainWindow):
         btn_obs.clicked.connect(self.copy_obs_url)
         sv.addWidget(btn_obs)
 
+        # Anti-Bot & Cookies
+        btn_cookies = QPushButton("🍪 Anti-Bot / Cookies")
+        btn_cookies.setToolTip("Resolver bloqueio 'Sign in to confirm you're not a bot' do YouTube")
+        btn_cookies.clicked.connect(self.cookies_dialog)
+        sv.addWidget(btn_cookies)
+
         body_h.addWidget(sidebar)
 
         # ---- PAINEL CENTRAL ----
@@ -828,6 +834,71 @@ class PodWindow(QMainWindow):
 
         b_ok.clicked.connect(do_merge)
         b_cancel.clicked.connect(dlg.reject)
+        dlg.exec()
+
+    def cookies_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🍪 Anti-Bot / Cookies do YouTube")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+
+        info = backend.cookies_info()
+        status_lbl = QLabel()
+        if info.get("has_cookies"):
+            status_lbl.setText(f"✓ Cookies ativos ({fmt_size(info.get('size', 0))})\n{info.get('path', '')}")
+            status_lbl.setStyleSheet("color: #4caf50; font-weight: bold;")
+        else:
+            status_lbl.setText("Nenhum cookie configurado.\n(O POD já usa clientes móveis anti-bot por padrão. Se o YouTube bloquear seu IP, use as opções abaixo para autenticar).")
+            status_lbl.setStyleSheet("color: #8b8b98;")
+        status_lbl.setWordWrap(True)
+        v.addWidget(status_lbl)
+
+        v.addSpacing(10)
+        btn_browser = QPushButton("🔄 Extrair cookies do Navegador (Chrome/Firefox/Edge/Brave)")
+        btn_browser.setObjectName("primary")
+        v.addWidget(btn_browser)
+
+        btn_file = QPushButton("📁 Importar arquivo cookies.txt...")
+        v.addWidget(btn_file)
+
+        btn_del = QPushButton("🗑 Remover cookies salvos")
+        btn_del.setVisible(bool(info.get("has_cookies")))
+        v.addWidget(btn_del)
+
+        def do_browser():
+            btn_browser.setEnabled(False)
+            btn_browser.setText("Buscando cookies nos navegadores...")
+            QApplication.processEvents()
+            res = backend.cookies_from_browser_endpoint()
+            btn_browser.setEnabled(True)
+            btn_browser.setText("🔄 Extrair cookies do Navegador (Chrome/Firefox/Edge/Brave)")
+            if res.get("ok"):
+                QMessageBox.information(dlg, "Cookies do YouTube", res.get("msg", "Sucesso!"))
+                dlg.accept()
+            else:
+                QMessageBox.warning(dlg, "Aviso", res.get("msg", "Não foi possível extrair cookies."))
+
+        def do_file():
+            fn, _ = QFileDialog.getOpenFileName(dlg, "Selecionar cookies.txt", str(Path.home()), "Cookies (*.txt);;Todos os arquivos (*.*)")
+            if fn:
+                data = Path(fn).read_bytes()
+                out = backend.DATA / "cookies.txt"
+                out.write_bytes(data)
+                QMessageBox.information(dlg, "Cookies Importados", f"Arquivo cookies.txt importado com sucesso ({len(data)} bytes)!")
+                dlg.accept()
+
+        def do_del():
+            backend.cookies_delete_endpoint()
+            QMessageBox.information(dlg, "Cookies Removidos", "Cookies do YouTube removidos com sucesso.")
+            dlg.accept()
+
+        btn_browser.clicked.connect(do_browser)
+        btn_file.clicked.connect(do_file)
+        btn_del.clicked.connect(do_del)
+
+        b_close = QPushButton("Fechar")
+        b_close.clicked.connect(dlg.reject)
+        v.addWidget(b_close)
         dlg.exec()
 
     def manage_episode_playlists(self, ep: dict):

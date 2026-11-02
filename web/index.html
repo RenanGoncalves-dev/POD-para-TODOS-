@@ -92,6 +92,13 @@ audio{width:100%;height:38px}
   </div>
   <div id="cards" style="margin-top:6px"></div>
   <div class="s" style="margin-top:10px">🎥 Overlay para OBS (Fonte de Navegador, 600×160):<br><b id="ovl" style="user-select:all"></b></div>
+  <div class="s" style="margin-top:12px">🍪 Anti-Bot do YouTube (caso peça login / "Sign in to confirm you're not a bot"):<br><span id="ckInfo" style="font-weight:600">Verificando…</span></div>
+  <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+    <button type="button" id="btnCkBrowser">🔄 Pegar cookies do navegador do PC</button>
+    <button type="button" id="btnCkFile">📁 Enviar cookies.txt</button>
+    <button type="button" id="btnCkDel" style="display:none">🗑 Remover cookies</button>
+    <input type="file" id="ckFileInput" accept=".txt" hidden>
+  </div>
   <input type="file" id="file" accept="audio/*,.m4a,.opus,.webm" multiple hidden>
 </div></details>
 </div>
