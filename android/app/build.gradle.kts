@@ -10,8 +10,8 @@ android {
         applicationId = "br.pod.pratodos"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.3.1"
+        versionCode = 5
+        versionName = "2.3.2"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") } // celulares reais; APK menor
     }
     buildTypes {

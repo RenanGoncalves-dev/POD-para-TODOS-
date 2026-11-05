@@ -278,11 +278,11 @@ class PlaylistMergeReq(BaseModel):
 
 
 def get_default_postprocessors() -> list[dict]:
-    """Se o FFmpeg estiver disponível no sistema, extrai o áudio como .m4a puro garantindo compatibilidade total."""
+    """Se o FFmpeg estiver disponível no sistema, extrai o áudio caso o fallback baixe container de vídeo."""
     if shutil.which("ffmpeg"):
         return [{
             "key": "FFmpegExtractAudio",
-            "preferredcodec": "m4a",
+            "preferredcodec": "best",
             "preferredquality": "192",
             "nopostoverwrites": False,
         }]
@@ -290,11 +290,11 @@ def get_default_postprocessors() -> list[dict]:
 
 
 YDL_OPTS = {
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/bestaudio*/best*",
     "writethumbnail": True,
     "quiet": True,
     "noprogress": True,
-    "ignoreerrors": True,
+    "ignoreerrors": False,
     "noplaylist": False,
     "restrictfilenames": False,
     "windowsfilenames": True,
@@ -303,7 +303,7 @@ YDL_OPTS = {
     "js_runtimes": js_runtimes(),
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "ios", "mweb", "web", "tv_samsung", "visionos"],
+            "player_client": ["visionos", "android_vr", "android", "ios", "mweb", "web", "tv_samsung"],
         }
     },
     "http_headers": {
@@ -321,18 +321,45 @@ def find_cookie_file() -> Path | None:
     return None
 
 
-def get_ydl_opts(extra_opts: dict | None = None) -> dict:
-    """Retorna opções do yt-dlp configuradas com proteção anti-bot e cookies (se existirem)."""
+def get_ydl_opts(extra_opts: dict | None = None, use_cookies: bool = False) -> dict:
+    """Retorna opções do yt-dlp. Tenta primeiro clientes nativos JS-less sem cookies (pois --cookies desativa visionos/android/ios)."""
     opts = dict(YDL_OPTS)
     pps = get_default_postprocessors()
     if pps:
         opts["postprocessors"] = list(pps)
-    cookie_file = find_cookie_file()
-    if cookie_file:
-        opts["cookiefile"] = str(cookie_file)
+    if use_cookies:
+        cookie_file = find_cookie_file()
+        if cookie_file:
+            opts["cookiefile"] = str(cookie_file)
+            opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["tv_samsung", "mweb", "web", "web_safari", "web_embedded"],
+                }
+            }
     if extra_opts:
         opts.update(extra_opts)
     return opts
+
+
+def extract_with_fallback(url: str, download: bool, extra_opts: dict | None = None) -> tuple[dict, Path | None]:
+    """Executa yt-dlp tentando primeiro clientes nativos JS-less (sem cookies) e fazendo fallback para cookies se necessário."""
+    last_exc: Exception | None = None
+    has_cookies = find_cookie_file() is not None
+    attempts = [False, True] if has_cookies else [False]
+    for use_cookies in attempts:
+        opts = get_ydl_opts(extra_opts, use_cookies=use_cookies)
+        try:
+            with yt_dlp.YoutubeDL(opts) as y:
+                info = y.extract_info(url, download=download)
+                if not info:
+                    raise RuntimeError("Nenhuma informação retornada pelo extrator")
+                entries = info.get("entries")
+                first_entry = (entries[0] if entries else info) or {}
+                prep = Path(y.prepare_filename(first_entry)) if (download and first_entry) else None
+                return info, prep
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+    raise (last_exc or RuntimeError("Não foi possível extrair áudio deste link"))
 
 
 def find_or_fetch_thumb(audio_path: Path, vid: str | None = None, fallback_url: str | None = None) -> str | None:
@@ -546,26 +573,23 @@ def try_spotify_url(raw_url: str, cat: str, playlist_id: int | None = None) -> b
         try:
             (AUDIO / cat).mkdir(parents=True, exist_ok=True)
             safe_stem = f"{safe_filename(display_title, 90)} [{vid}]"
-            opts = get_ydl_opts({
+            search_q = f"ytsearch1:{display_title} audio"
+            info, path = extract_with_fallback(search_q, download=True, extra_opts={
                 "outtmpl": str(AUDIO / cat / f"{safe_stem}.%(ext)s"),
                 "noplaylist": True,
             })
-            search_q = f"ytsearch1:{display_title} audio"
-            with yt_dlp.YoutubeDL(opts) as y:
-                info = y.extract_info(search_q, download=True)
-                entries = info.get("entries") if info else None
-                d = (entries[0] if entries else info) or {}
-                path = Path(y.prepare_filename(d)) if d else None
-                if path and not path.is_file():
-                    for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"):
-                        cand = path.with_suffix(ext)
-                        if cand.is_file():
-                            path = cand
-                            break
-                if not path or not path.is_file():
-                    # Procura pelo prefixo [vid] na pasta
-                    matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
-                    path = matches[0] if matches else None
+            entries = info.get("entries") if info else None
+            d = (entries[0] if entries else info) or {}
+            if path and not path.is_file():
+                for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"):
+                    cand = path.with_suffix(ext)
+                    if cand.is_file():
+                        path = cand
+                        break
+            if not path or not path.is_file():
+                # Procura pelo prefixo [vid] na pasta
+                matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
+                path = matches[0] if matches else None
             if not path or not path.is_file():
                 raise RuntimeError(f"Áudio não encontrado para: {display_title}")
             meta = extract_embedded_metadata(path)
@@ -803,10 +827,8 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
 
     # 2) YouTube / SoundCloud / Bandcamp / Mixcloud / Busca por nome via yt-dlp
     url = unwrap_download_url(raw_url) if raw_url.startswith(("http://", "https://")) else f"ytsearch1:{raw_url}"
-    flat_opts = get_ydl_opts({"extract_flat": "in_playlist", "quiet": True, "ignoreerrors": True})
     try:
-        with yt_dlp.YoutubeDL(flat_opts) as y:
-            info = y.extract_info(url, download=False)
+        info, _ = extract_with_fallback(url, download=False, extra_opts={"extract_flat": "in_playlist", "quiet": True})
     except Exception as e:  # noqa: BLE001
         info = None
         last_err = str(e)
@@ -846,17 +868,17 @@ def job(raw_url: str, cat: str = "podcasts", playlist_id: int | None = None):
         try:
             (AUDIO / cat).mkdir(parents=True, exist_ok=True)
             target = item_url if item_url.startswith(("http://", "https://")) else f"https://www.youtube.com/watch?v={vid}"
-            opts = get_ydl_opts({"outtmpl": str(AUDIO / cat / "%(title).100s [%(id)s].%(ext)s")})
-            with yt_dlp.YoutubeDL(opts) as y:
-                d = y.extract_info(target, download=True)
-                path = Path(y.prepare_filename(d))
-            if not path.is_file():
+            d, path = extract_with_fallback(target, download=True, extra_opts={
+                "outtmpl": str(AUDIO / cat / "%(title).100s [%(id)s].%(ext)s"),
+                "noplaylist": True,
+            })
+            if path and not path.is_file():
                 for ext in (".m4a", ".mp3", ".opus", ".ogg", ".webm", ".aac", ".wav", ".flac", ".mp4"):
                     cand = path.with_suffix(ext)
                     if cand.is_file():
                         path = cand
                         break
-            if not path.is_file():
+            if not path or not path.is_file():
                 matches = [p for p in (AUDIO / cat).iterdir() if p.is_file() and f"[{vid}]" in p.name and p.suffix.lower() in AUDIO_EXTS]
                 if matches:
                     path = matches[0]

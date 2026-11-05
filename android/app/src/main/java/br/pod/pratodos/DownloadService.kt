@@ -214,23 +214,13 @@ class DownloadService : Service() {
             DownloadManager.update(job.id) {
                 it.copy(progress = baseProgress, text = "Spotify (${idx + 1}/${sp.tracks.size}): $displayTitle")
             }
-            val req = YoutubeDLRequest("ytsearch1:$displayTitle audio").apply {
-                addOption("-f", "bestaudio[ext=m4a]/bestaudio/best")
-                addOption("-x")
-                addOption("--audio-format", "m4a")
-                addOption("--write-thumbnail")
-                addOption("--convert-thumbnails", "jpg")
-                addOption("-o", "${catDir.absolutePath}/$safeStem.%(ext)s")
-                addOption("--windows-filenames")
-                addOption("--no-playlist")
-                addOption("--no-overwrites")
-                addOption("--no-mtime")
-                addOption("--ignore-errors")
-                addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web,tv_samsung,visionos")
-                Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
-            }
             runCatching {
-                YoutubeDL.getInstance().execute(req, "dl-${job.id}-$idx") { p, _, _ ->
+                executeYtDlpWithFallback(
+                    targetUrl = "ytsearch1:$displayTitle audio",
+                    outputTemplate = "${catDir.absolutePath}/$safeStem.%(ext)s",
+                    yesPlaylist = false,
+                    processIdPrefix = "dl-${job.id}-$idx",
+                ) { p, _ ->
                     val stepP = if (p > 0) (idx + p / 100f) / sp.tracks.size else baseProgress
                     DownloadManager.update(job.id) {
                         it.copy(progress = stepP, text = "Spotify (${idx + 1}/${sp.tracks.size}): $displayTitle")
@@ -249,6 +239,74 @@ class DownloadService : Service() {
             }
             DownloadManager.version.update { it + 1 }
         }
+    }
+
+    private fun executeYtDlpWithFallback(
+        targetUrl: String,
+        outputTemplate: String,
+        yesPlaylist: Boolean,
+        processIdPrefix: String,
+        onProgress: (Float, String) -> Unit,
+    ) {
+        val cookieFile = Library.cookieFile(this)
+        val formatSelector = "bestaudio[ext=m4a]/bestaudio/bestaudio*/best*"
+        // Clientes que NÃO exigem runtime JavaScript (Deno/Node) no Android:
+        // Nota: passar --cookies faz o yt-dlp pular visionos/android_vr/android/ios (pois SUPPORTS_COOKIES=False)
+        // e usar apenas web/mweb/tv (que exigem JS runtime), causando "Requested format is not available".
+        // Por isso a 1ª tentativa roda SEM cookies nos clientes nativos JS-less!
+        val jsLessClients = "youtube:player_client=visionos,android_vr,android,ios"
+        val broadClients = "youtube:player_client=visionos,android_vr,android,ios,tv_samsung,mweb,web"
+        val cookieClients = "youtube:player_client=tv_samsung,mweb,web,web_safari,web_embedded"
+
+        fun buildReq(extractorArgs: String, useCookies: Boolean, fmt: String = formatSelector): YoutubeDLRequest {
+            return YoutubeDLRequest(targetUrl).apply {
+                addOption("-f", fmt)
+                addOption("-x")
+                addOption("--write-thumbnail")
+                addOption("--convert-thumbnails", "jpg")
+                addOption("-o", outputTemplate)
+                addOption("--windows-filenames")
+                if (yesPlaylist) {
+                    addOption("--yes-playlist")
+                    addOption("--ignore-errors")
+                } else {
+                    addOption("--no-playlist")
+                }
+                addOption("--no-overwrites")
+                addOption("--no-mtime")
+                addOption("--extractor-args", extractorArgs)
+                if (useCookies && cookieFile != null) {
+                    addOption("--cookies", cookieFile.absolutePath)
+                }
+            }
+        }
+
+        val attempt1 = runCatching {
+            YoutubeDL.getInstance().execute(
+                buildReq(jsLessClients, useCookies = false),
+                "$processIdPrefix-1",
+            ) { p, _, line -> onProgress(p, line) }
+        }
+        if (attempt1.isSuccess) return
+
+        val err1Msg = attempt1.exceptionOrNull()?.message ?: ""
+        val needsAuth = cookieFile != null && (
+            err1Msg.contains("Sign in", ignoreCase = true) ||
+                err1Msg.contains("age", ignoreCase = true) ||
+                err1Msg.contains("private", ignoreCase = true) ||
+                err1Msg.contains("members", ignoreCase = true)
+            )
+
+        val attempt2 = runCatching {
+            val clients = if (needsAuth) cookieClients else broadClients
+            YoutubeDL.getInstance().execute(
+                buildReq(clients, useCookies = needsAuth, fmt = "bestaudio/bestaudio*/best*"),
+                "$processIdPrefix-2",
+            ) { p, _, line -> onProgress(p, line) }
+        }
+        if (attempt2.isSuccess) return
+
+        throw (attempt1.exceptionOrNull() ?: attempt2.exceptionOrNull() ?: RuntimeException("Falha ao extrair áudio"))
     }
 
     private fun downloadDirectHttp(job: DlJob, audioUrl: String, dir: File) {
@@ -312,22 +370,13 @@ class DownloadService : Service() {
                     while (!DownloadManager.ready.value && DownloadManager.initError.value == null) delay(300)
                     if (DownloadManager.initError.value != null) error("yt-dlp não iniciou: ${DownloadManager.initError.value}")
                     val targetUrl = if (unwrapped.startsWith("http://") || unwrapped.startsWith("https://")) unwrapped else "ytsearch1:$unwrapped"
-                    val req = YoutubeDLRequest(targetUrl).apply {
-                        addOption("-f", "bestaudio[ext=m4a]/bestaudio/best")
-                        addOption("-x")
-                        addOption("--audio-format", "m4a")
-                        addOption("--write-thumbnail")
-                        addOption("--convert-thumbnails", "jpg")
-                        addOption("-o", "${catDir.absolutePath}/%(title).100s [%(id)s].%(ext)s")
-                        addOption("--windows-filenames")
-                        addOption("--yes-playlist")
-                        addOption("--no-overwrites")
-                        addOption("--no-mtime")
-                        addOption("--ignore-errors")
-                        addOption("--extractor-args", "youtube:player_client=android,ios,mweb,web,tv_samsung,visionos")
-                        Library.cookieFile(this@DownloadService)?.let { addOption("--cookies", it.absolutePath) }
-                    }
-                    YoutubeDL.getInstance().execute(req, "dl-${job.id}") { p, _, line ->
+                    val isPlaylist = targetUrl.contains("list=", ignoreCase = true) || targetUrl.contains("/playlist", ignoreCase = true)
+                    executeYtDlpWithFallback(
+                        targetUrl = targetUrl,
+                        outputTemplate = "${catDir.absolutePath}/%(title).100s [%(id)s].%(ext)s",
+                        yesPlaylist = isPlaylist,
+                        processIdPrefix = "dl-${job.id}",
+                    ) { p, line ->
                         val txt = line.lineSequence().lastOrNull { it.isNotBlank() }?.take(80) ?: ""
                         DownloadManager.update(job.id) { it.copy(progress = if (p > 0) p / 100f else it.progress, text = txt.ifBlank { it.text }) }
                     }
