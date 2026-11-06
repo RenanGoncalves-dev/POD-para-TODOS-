@@ -31,6 +31,14 @@ const fmtClock = (s) => {
   const sec = Math.floor(s % 60);
   return `${m}:${sec < 10 ? "0" : ""}${sec}`;
 };
+const parseClock = (str) => {
+  if (!str) return 0;
+  const parts = str.trim().split(":").map(Number);
+  if (parts.length === 1) return parts[0] || 0;
+  if (parts.length === 2) return (parts[0] || 0) * 60 + (parts[1] || 0);
+  if (parts.length === 3) return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+  return 0;
+};
 const mb = (b) => (b ? (b > 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : (b / 1048576).toFixed(1) + " MB") : "");
 
 async function refreshOffline() {
@@ -118,6 +126,7 @@ function render() {
       const row = document.createElement("div");
       row.className = "row";
       row.append(btn("▶", "ic play", () => play(e, path, visible)));
+      if (navigator.onLine) row.append(btn("✂️", "ic", () => editAudioModal(e)));
       row.append(btn("➕", "ic", () => openPlaylistModal(e)));
       if (navigator.onLine) row.append(btn("📂", "ic", () => move(e)));
       if (navigator.onLine) row.append(btn("🗑", "ic", () => del(e)));
@@ -264,6 +273,78 @@ function mergePlaylistsPrompt() {
         curPl = dstId;
         render();
       }
+    }
+  };
+}
+
+function editAudioModal(e) {
+  const box = $("#mcard");
+  box.innerHTML = `<h3>✂️ Editar / Cortar Áudio</h3>
+    <div class="s" style="margin-bottom:6px">${e.title}</div>
+    <label class="s">1. Cortar início (pular introdução / emails):</label>
+    <input id="edStart" placeholder="Início (ex: 24:30 ou 00:24:30)" value="00:00">
+    <div style="display:flex;gap:4px;flex-wrap:wrap;margin:4px 0">
+      <button type="button" class="s" style="padding:4px 8px" onclick="$('#edStart').value=fmtClock((parseClock($('#edStart').value)||0)+60)">+1m</button>
+      <button type="button" class="s" style="padding:4px 8px" onclick="$('#edStart').value=fmtClock((parseClock($('#edStart').value)||0)+300)">+5m</button>
+      <button type="button" class="s" style="padding:4px 8px" onclick="$('#edStart').value=fmtClock((parseClock($('#edStart').value)||0)+600)">+10m</button>
+      <button type="button" class="s" style="padding:4px 8px" onclick="$('#edStart').value=fmtClock((parseClock($('#edStart').value)||0)+1200)">+20m</button>
+      <button type="button" class="s" style="padding:4px 8px" onclick="$('#edStart').value='00:00'">Zerar</button>
+    </div>
+    <label class="s" style="margin-top:4px">2. Cortar fim (opcional):</label>
+    <input id="edEnd" placeholder="Fim (ex: 1:30:00 ou vazio p/ manter até o final)">
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:6px">
+      <input type="checkbox" id="edAdCheck" onchange="$('#edAdBox').style.display=this.checked?'flex':'none'">
+      Remover propaganda no meio do áudio
+    </label>
+    <div id="edAdBox" style="display:none;gap:6px;margin-top:4px">
+      <input id="edAdStart" placeholder="Início anúncio (12:00)" style="flex:1">
+      <input id="edAdEnd" placeholder="Fim anúncio (14:30)" style="flex:1">
+    </div>
+    <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-top:6px">
+      <input type="checkbox" id="edReplace" checked>
+      Substituir arquivo original (economiza espaço)
+    </label>
+    <div id="edStatus" class="s" style="margin-top:4px;font-weight:600"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button id="edCancel">Cancelar</button>
+      <button id="edOk" class="play">✂️ Cortar Áudio</button>
+    </div>`;
+  $("#modal").hidden = false;
+  $("#edCancel").onclick = closeModal;
+  $("#edOk").onclick = async () => {
+    const sSec = parseClock($("#edStart").value) || 0;
+    const eVal = $("#edEnd").value.trim();
+    const eSec = eVal ? parseClock(eVal) : null;
+    const adCheck = $("#edAdCheck").checked;
+    const adStart = adCheck && $("#edAdStart").value ? parseClock($("#edAdStart").value) : null;
+    const adEnd = adCheck && $("#edAdEnd").value ? parseClock($("#edAdEnd").value) : null;
+    const replaceOrig = $("#edReplace").checked;
+
+    $("#edStatus").textContent = "Processando corte de áudio...";
+    $("#edOk").disabled = true;
+
+    try {
+      const res = await fetch(`/api/episodes/${e.id}/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trim_start: sSec,
+          trim_end: eSec,
+          ad_start: adStart,
+          ad_end: adEnd,
+          replace_original: replaceOrig,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Erro ao cortar");
+      $("#edStatus").textContent = "✓ Áudio editado com sucesso!";
+      setTimeout(() => {
+        closeModal();
+        load();
+      }, 1000);
+    } catch (err) {
+      $("#edStatus").textContent = "⚠ " + err.message;
+      $("#edOk").disabled = false;
     }
   };
 }

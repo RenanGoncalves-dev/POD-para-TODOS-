@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
@@ -118,6 +119,9 @@ fun Screen(vm: MainVm, isLight: Boolean) {
     val hasCookies by vm.hasCookies.collectAsState()
     val ytDlpUpdating by vm.ytDlpUpdating.collectAsState()
     val ytDlpUpdateStatus by vm.ytDlpUpdateStatus.collectAsState()
+    val editingEpisode by vm.editingEpisode.collectAsState()
+    val editStatus by vm.editStatus.collectAsState()
+    val isEditing by vm.isEditing.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     val catPlaylists = playlists.filter { it.category == category }
@@ -388,6 +392,7 @@ fun Screen(vm: MainVm, isLight: Boolean) {
                         if (active && p.playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
                         tint = Red, modifier = Modifier.size(30.dp),
                     )
+                    IconButton(onClick = { vm.setEditingEpisode(ep) }) { Icon(Icons.Default.ContentCut, "Cortar / Editar áudio", tint = Color.Gray) }
                     IconButton(onClick = { playlistTarget = ep }) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Playlists", tint = Color.Gray) }
                     IconButton(onClick = { moving = ep }) { Icon(Icons.AutoMirrored.Filled.DriveFileMove, "Mover", tint = Color.Gray) }
                     IconButton(onClick = { confirmDelete = ep }) { Icon(Icons.Default.DeleteOutline, "Apagar", tint = Color.Gray) }
@@ -685,6 +690,17 @@ fun Screen(vm: MainVm, isLight: Boolean) {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancelar") } },
         )
     }
+
+    editingEpisode?.let { ep ->
+        AudioEditDialog(
+            ep = ep,
+            vm = vm,
+            p = p,
+            isEditing = isEditing,
+            editStatus = editStatus,
+            onDismiss = { vm.setEditingEpisode(null) },
+        )
+    }
 }
 
 @Composable
@@ -696,6 +712,9 @@ fun PlayerBar(p: PlayerUi, vm: MainVm, isLight: Boolean) {
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(p.episode?.title ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = { p.episode?.let { vm.setEditingEpisode(it) } }, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.ContentCut, "Cortar áudio", tint = Red, modifier = Modifier.size(18.dp))
+            }
             TextButton(onClick = { vm.cycleSleepTimer() }) {
                 Text(if (p.sleepMinutesLeft > 0) "⏲️ ${p.sleepMinutesLeft}m" else "⏲️ Off", fontSize = 12.sp, color = if (p.sleepMinutesLeft > 0) Red else Color.Gray)
             }
@@ -721,4 +740,206 @@ fun PlayerBar(p: PlayerUi, vm: MainVm, isLight: Boolean) {
             }
         }
     }
+}
+
+@Composable
+fun AudioEditDialog(
+    ep: Episode,
+    vm: MainVm,
+    p: PlayerUi,
+    isEditing: Boolean,
+    editStatus: String?,
+    onDismiss: () -> Unit,
+) {
+    var startText by remember { mutableStateOf("00:00") }
+    var endText by remember { mutableStateOf("") }
+    var showAdCut by remember { mutableStateOf(false) }
+    var adStartText by remember { mutableStateOf("") }
+    var adEndText by remember { mutableStateOf("") }
+    var replaceOriginal by remember { mutableStateOf(true) }
+
+    val isCurrentTrack = p.episode?.id == ep.id && p.pos > 1000L
+
+    AlertDialog(
+        onDismissRequest = { if (!isEditing) onDismiss() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("✂️ Editar / Cortar Áudio", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(ep.title, fontSize = 12.sp, color = Color.Gray, maxLines = 2, overflow = TextOverflow.Ellipsis)
+
+                if (isCurrentTrack) {
+                    val posSec = p.pos / 1000f
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("⏱ Posição atual do player:", fontSize = 11.sp, color = Color.Gray)
+                                Text(fmtTime(p.pos), fontWeight = FontWeight.Bold, color = Red, fontSize = 14.sp)
+                            }
+                            OutlinedButton(
+                                onClick = { startText = AudioEditor.formatSecondsToTime(posSec) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(34.dp),
+                            ) {
+                                Text("Usar como início", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+
+                Text("1. Cortar início (pular introdução / emails):", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                OutlinedTextField(
+                    value = startText,
+                    onValueChange = { startText = it },
+                    singleLine = true,
+                    label = { Text("Início (ex: 24:30)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                )
+                // Chips de tempo rápido para pular introduções longas
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf(1, 5, 10, 15, 20, 25).forEach { mins ->
+                        AssistChip(
+                            onClick = {
+                                val curSec = AudioEditor.parseTimeToSeconds(startText) ?: 0f
+                                startText = AudioEditor.formatSecondsToTime(curSec + mins * 60f)
+                            },
+                            label = { Text("+$mins min", fontSize = 11.sp) },
+                        )
+                    }
+                    AssistChip(
+                        onClick = { startText = "00:00" },
+                        label = { Text("Zerar", fontSize = 11.sp) },
+                    )
+                }
+
+                Spacer(Modifier.height(2.dp))
+                Text("2. Cortar fim (opcional):", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                OutlinedTextField(
+                    value = endText,
+                    onValueChange = { endText = it },
+                    singleLine = true,
+                    placeholder = { Text("Deixar vazio para ir até o fim") },
+                    label = { Text("Fim (ex: 1:30:00)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                )
+
+                HorizontalDivider()
+                Row(
+                    Modifier.fillMaxWidth().clickable { showAdCut = !showAdCut },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = showAdCut, onCheckedChange = { showAdCut = it })
+                    Column {
+                        Text("Remover propaganda no meio do episódio", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("Recorta o intervalo de anúncio e junta as partes", fontSize = 11.sp, color = Color.Gray)
+                    }
+                }
+
+                if (showAdCut) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = adStartText,
+                            onValueChange = { adStartText = it },
+                            label = { Text("Início anúncio") },
+                            placeholder = { Text("12:00") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                        )
+                        OutlinedTextField(
+                            value = adEndText,
+                            onValueChange = { adEndText = it },
+                            label = { Text("Fim anúncio") },
+                            placeholder = { Text("14:30") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+                Row(
+                    Modifier.fillMaxWidth().clickable { replaceOriginal = !replaceOriginal },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = replaceOriginal, onCheckedChange = { replaceOriginal = it })
+                    Column {
+                        Text("Substituir arquivo original", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text(if (replaceOriginal) "Economiza espaço na memória" else "Salva uma nova versão \"(Editado)\"", fontSize = 11.sp, color = Color.Gray)
+                    }
+                }
+
+                if (isEditing) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+
+                if (editStatus != null) {
+                    Text(
+                        editStatus,
+                        color = if (editStatus.startsWith("✓")) Color(0xFF4CAF50) else Red,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !isEditing,
+                onClick = {
+                    val sSec = AudioEditor.parseTimeToSeconds(startText) ?: 0f
+                    val eSec = AudioEditor.parseTimeToSeconds(endText)
+                    val adPair = if (showAdCut) {
+                        val a1 = AudioEditor.parseTimeToSeconds(adStartText)
+                        val a2 = AudioEditor.parseTimeToSeconds(adEndText)
+                        if (a1 != null && a2 != null && a1 < a2) a1 to a2 else null
+                    } else null
+
+                    val opts = AudioEditor.EditOptions(
+                        trimStartSec = sSec,
+                        trimEndSec = eSec,
+                        adInterval = adPair,
+                        replaceOriginal = replaceOriginal,
+                    )
+                    vm.editEpisodeAudio(ep, opts)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Red),
+            ) {
+                if (isEditing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Processando…")
+                } else {
+                    Icon(Icons.Default.ContentCut, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Cortar Áudio")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(enabled = !isEditing, onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        },
+    )
 }

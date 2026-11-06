@@ -41,6 +41,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val hasCookies = MutableStateFlow(Library.hasCookies(app))
     val ytDlpUpdating = MutableStateFlow(false)
     val ytDlpUpdateStatus = MutableStateFlow<String?>(null)
+    val editingEpisode = MutableStateFlow<Episode?>(null)
+    val editStatus = MutableStateFlow<String?>(null)
+    val isEditing = MutableStateFlow(false)
     val player = MutableStateFlow(PlayerUi())
     val ui: StateFlow<PlayerUi> = player
 
@@ -289,6 +292,46 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         }
         sleepUntilMs = if (next > 0) System.currentTimeMillis() + next * 60_000L else 0L
         sync()
+    }
+
+    fun setEditingEpisode(ep: Episode?) {
+        editingEpisode.value = ep
+        editStatus.value = null
+    }
+
+    fun editEpisodeAudio(episode: Episode, options: AudioEditor.EditOptions) {
+        if (isEditing.value) return
+        viewModelScope.launch {
+            isEditing.value = true
+            editStatus.value = "Iniciando processamento com FFmpeg…"
+            val wasPlayingThis = player.value.episode?.id == episode.id
+            if (wasPlayingThis && player.value.playing) {
+                controller?.pause()
+            }
+            val res = withContext(Dispatchers.IO) {
+                AudioEditor.editAudio(ctx, episode, options) { msg ->
+                    editStatus.value = msg
+                }
+            }
+            if (res.isSuccess) {
+                editStatus.value = "✓ Áudio editado com sucesso!"
+                if (wasPlayingThis && options.replaceOriginal) {
+                    controller?.stop()
+                    controller?.clearMediaItems()
+                    player.value = PlayerUi()
+                }
+                refresh()
+                delay(1800)
+                editingEpisode.value = null
+                editStatus.value = null
+            } else {
+                val err = res.exceptionOrNull()?.message ?: "Falha ao editar áudio"
+                editStatus.value = "⚠ Erro: $err"
+                delay(3500)
+                editStatus.value = null
+            }
+            isEditing.value = false
+        }
     }
 
     fun delete(ep: Episode) {

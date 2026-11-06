@@ -277,6 +277,14 @@ class PlaylistMergeReq(BaseModel):
     delete_source: bool = False
 
 
+class EditEpisodeReq(BaseModel):
+    trim_start: float = 0.0
+    trim_end: float | None = None
+    ad_start: float | None = None
+    ad_end: float | None = None
+    replace_original: bool = True
+
+
 def get_default_postprocessors() -> list[dict]:
     """Se o FFmpeg estiver disponível no sistema, extrai o áudio caso o fallback baixe container de vídeo."""
     if shutil.which("ffmpeg"):
@@ -978,6 +986,116 @@ def delete(eid: str):
         c.execute("DELETE FROM episodes WHERE id=?", (eid,))
         c.execute("DELETE FROM playlist_items WHERE episode_id=?", (eid,))
     return {"ok": True}
+
+
+def edit_audio_file(
+    src_path: Path,
+    trim_start: float = 0.0,
+    trim_end: float | None = None,
+    ad_interval: tuple[float, float] | None = None,
+    replace_original: bool = True,
+) -> Path:
+    ffmpeg_exe = shutil.which("ffmpeg") or "ffmpeg"
+    tmp_out = src_path.parent / f".editing_{short_id(str(src_path.name) + str(os.urandom(4)))}{src_path.suffix}"
+    try:
+        if ad_interval and ad_interval[0] < ad_interval[1]:
+            # Remove propaganda no meio
+            t1, t2 = ad_interval
+            if trim_end is not None and trim_end > t2:
+                filt = f"[0:a]atrim=start={trim_start:.2f}:end={t1:.2f},asetpts=PTS-STARTPTS[a1];[0:a]atrim=start={t2:.2f}:end={trim_end:.2f},asetpts=PTS-STARTPTS[a2];[a1][a2]concat=n=2:v=0:a=1[out]"
+            else:
+                filt = f"[0:a]atrim=start={trim_start:.2f}:end={t1:.2f},asetpts=PTS-STARTPTS[a1];[0:a]atrim=start={t2:.2f},asetpts=PTS-STARTPTS[a2];[a1][a2]concat=n=2:v=0:a=1[out]"
+            cmd = [ffmpeg_exe, "-y", "-i", str(src_path), "-filter_complex", filt, "-map", "[out]", str(tmp_out)]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if res.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+                raise RuntimeError(f"FFmpeg falhou ao remover intervalo: {res.stderr[:300]}")
+        else:
+            # Corte de início e/ou fim
+            # Tenta stream copy primeiro (-c copy)
+            copy_cmd = [ffmpeg_exe, "-y"]
+            if trim_start > 0:
+                copy_cmd.extend(["-ss", f"{trim_start:.2f}"])
+            if trim_end is not None and trim_end > trim_start:
+                copy_cmd.extend(["-to", f"{trim_end:.2f}"])
+            copy_cmd.extend(["-i", str(src_path), "-c", "copy", str(tmp_out)])
+            res = subprocess.run(copy_cmd, capture_output=True, text=True, check=False)
+
+            if res.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+                # Fallback: re-encode
+                tmp_out.unlink(missing_ok=True)
+                reenc_cmd = [ffmpeg_exe, "-y"]
+                if trim_start > 0:
+                    reenc_cmd.extend(["-ss", f"{trim_start:.2f}"])
+                if trim_end is not None and trim_end > trim_start:
+                    reenc_cmd.extend(["-to", f"{trim_end:.2f}"])
+                reenc_cmd.extend(["-i", str(src_path), str(tmp_out)])
+                res = subprocess.run(reenc_cmd, capture_output=True, text=True, check=False)
+                if res.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+                    raise RuntimeError(f"FFmpeg falhou ao cortar áudio: {res.stderr[:300]}")
+
+        if replace_original:
+            tmp_out.replace(src_path)
+            return src_path
+        else:
+            stem = f"{src_path.stem} (Editado)"
+            dest = src_path.parent / f"{stem}{src_path.suffix}"
+            tmp_out.replace(dest)
+            for t in companion_thumbs(src_path):
+                thumb_dest = src_path.parent / f"{stem}{t.suffix}"
+                shutil.copy2(t, thumb_dest)
+            return dest
+    except Exception:
+        tmp_out.unlink(missing_ok=True)
+        raise
+
+
+@app.post("/api/episodes/{eid}/edit")
+def edit_episode_endpoint(eid: str, req: EditEpisodeReq):
+    with _lock, db() as c:
+        row = c.execute("SELECT * FROM episodes WHERE id=?", (eid,)).fetchone()
+    if not row or not row["file"]:
+        raise HTTPException(404, "Episódio não encontrado")
+    src = (AUDIO / row["file"]).resolve()
+    if not src.is_file():
+        raise HTTPException(404, "Arquivo de áudio não encontrado no disco")
+
+    ad_pair = (req.ad_start, req.ad_end) if req.ad_start is not None and req.ad_end is not None else None
+    try:
+        final_path = edit_audio_file(
+            src,
+            trim_start=req.trim_start,
+            trim_end=req.trim_end,
+            ad_interval=ad_pair,
+            replace_original=req.replace_original,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao processar áudio: {e}")
+
+    meta = extract_embedded_metadata(final_path)
+    dur = meta.get("duration") or 0
+    size = final_path.stat().st_size
+
+    if req.replace_original:
+        with _lock, db() as c:
+            c.execute("UPDATE episodes SET duration=?, size=? WHERE id=?", (dur, size, eid))
+        return {"ok": True, "id": eid, "duration": dur, "size": size}
+    else:
+        new_id = "edt_" + short_id(final_path.name + str(size))[:7]
+        new_title = f"{row['title']} (Editado)"
+        rel = final_path.relative_to(AUDIO).as_posix()
+        thumb = find_or_fetch_thumb(final_path, new_id)
+        upsert(
+            id=new_id,
+            title=new_title,
+            channel=row["channel"],
+            duration=dur,
+            thumb=thumb,
+            file=rel,
+            size=size,
+            status="done",
+            category=row["category"],
+        )
+        return {"ok": True, "id": new_id, "title": new_title, "file": rel}
 
 
 # ---------- Playlists ----------
